@@ -3,7 +3,7 @@
 > Rust 实现的分布式事务消息中间件，兼容 Apache RocketMQ 4.9.x Remoting 协议与 Java SDK。
 > 面向电商/金融等对“低延迟、高可靠、可审计、最终一致”有要求的场景。
 
-- **当前阶段**：R1–R152 完成；v0.9.0-rc.1 交付冻结
+- **当前阶段**：R1–R153 完成；1.0 剩余工作计划已列出
 - **测试**：82 项 Rust 测试通过；RocketMQ 4.9.8 Java SDK 全量回归通过
 - **性能**：单条 100k 长跑 **9,347 TPS**；1M 长跑 **8,438 TPS/0 失败**；批量 64 条 **24,982 msg/s**；消费 20 线程 **11,130 TPS**
 - **目标**：兼容 RocketMQ 协议/SDK 的单机事务消息中间件 + TC Raft 集群
@@ -224,9 +224,10 @@ Producer/Consumer (RocketMQ Java SDK)
 | [R150-batch128](docs/rounds/R150-batch128.md) | 30,860 msg/s |
 | [R151-batch256](docs/rounds/R151-batch256.md) | 37,095 峰值 |
 | [R152-交付冻结](docs/rounds/R152-delivery-freeze.md) | RC 冻结 |
+| [R153-1.0计划](docs/22-1.0剩余工作计划.md) | 剩余工作 |
 | [图表索引](docs/图表索引.md) | PNG/PlantUML |
 
-分阶段报告：`docs/rounds/R01.md` … `R152-delivery-freeze.md`；最终验收见 [16-最终验收报告](docs/16-最终验收报告.md)，交付说明见 [21-最终交付说明](docs/21-最终交付说明.md)，交付索引见 [20-交付索引](docs/20-交付索引.md)。
+分阶段报告：`docs/rounds/R01.md` … `R152-delivery-freeze.md`；1.0 剩余计划见 [22-1.0剩余工作计划](docs/22-1.0剩余工作计划.md)；最终验收见 [16-最终验收报告](docs/16-最终验收报告.md)，交付说明见 [21-最终交付说明](docs/21-最终交付说明.md)，交付索引见 [20-交付索引](docs/20-交付索引.md)。
 
 Windows 分发包：[mq-rust-0.9.0-rc.1-win64.zip](dist/mq-rust-0.9.0-rc.1-win64.zip)。
 

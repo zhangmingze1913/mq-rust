@@ -25,7 +25,7 @@ foreach ($exe in @("mq-broker.exe", "mq-namesrv.exe", "mq-tc.exe")) {
 Copy-Item (Join-Path $Root "README.md") $Out
 Copy-Item (Join-Path $Root "CHANGELOG.md") $Out
 Get-ChildItem (Join-Path $Root "docs") -Filter "*.md" | Where-Object {
-    $_.Name -match "^(1[5-9]|2[0-1])-"
+    $_.Name -match "^(1[5-9]|2[0-2])-"
 } | ForEach-Object {
     Copy-Item $_.FullName $Out
 }
