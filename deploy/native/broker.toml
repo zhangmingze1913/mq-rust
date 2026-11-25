@@ -1,0 +1,33 @@
+[broker]
+name = "broker-a"
+cluster = "DefaultCluster"
+listen = "0.0.0.0:10911"
+namesrv = ["127.0.0.1:9876"]
+role = "async_master"
+broker_id = 0
+
+[store]
+root = "G:/MQ_soft/mq-rust-data"
+commitlog_size = "1GiB"
+flush = "async"
+flush_interval_ms = 500
+retention = "72h"
+disk_max_used_ratio = 0.85
+
+[txn]
+enabled = true
+mode = "embedded"
+first_check_delay = "6s"
+check_interval = "30s"
+max_check = 15
+max_tx_age = "4h"
+on_timeout = "rollback"
+
+[replication]
+mode = "async"
+min_isr = 1
+batch_bytes = "1MiB"
+
+[observability]
+metrics_addr = "0.0.0.0:9090"
+log_format = "json"

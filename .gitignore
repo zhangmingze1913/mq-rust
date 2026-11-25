@@ -1,0 +1,13 @@
+/target
+dist/
+**/*.rs.bk
+data/
+logs/
+*.log
+*.log.err
+cargo-test.log
+tests/compat/out/
+tools/java/out/
+.DS_Store
+.idea/
+.vscode/

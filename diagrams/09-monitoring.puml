@@ -1,0 +1,46 @@
+@startmindmap
+!theme plain
+skinparam defaultFontName "Microsoft YaHei"
+skinparam dpi 140
+title MQ-rust 监控图谱
+
+* 监控
+** 接入
+*** 连接数
+*** 请求 QPS
+*** 请求延迟
+*** 错误码
+** 发送
+*** TPS
+*** 字节/秒
+*** P99
+*** 失败/重试
+** 存储
+*** Append TPS
+*** Flush 延迟
+*** Dispatch 落后
+*** PageCache 命中
+*** 磁盘水位
+** 消费
+*** 消费 TPS
+*** Consumer Lag
+*** In-flight
+*** 重试/死信
+*** 长轮询挂起
+** 事务
+*** Half 数
+*** Commit/Rollback
+*** 未决/年龄
+*** 回查 QPS/延迟
+*** TC Leader
+** 复制
+*** Replica Lag
+*** ISR 大小
+*** 切换次数
+*** Fencing
+** 资源
+*** CPU / 内存
+*** 网络
+*** 磁盘 IO
+*** FD / 线程
+@endmindmap

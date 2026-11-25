@@ -1,0 +1,9 @@
+[package]
+name = "mq-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mq-common = { path = "../mq-common" }
+crc32c.workspace = true

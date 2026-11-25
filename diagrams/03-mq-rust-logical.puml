@@ -1,0 +1,80 @@
+@startuml
+!theme plain
+skinparam defaultFontName "Microsoft YaHei"
+skinparam dpi 160
+skinparam componentStyle rectangle
+skinparam shadowing false
+title MQ-rust 逻辑架构（事务增强）
+
+package "接入" {
+  [Remoting 4.9\n9876/10911] as R
+  [gRPC Proxy 5.x\n8081] as G
+  [HTTP Admin\n8080] as H
+}
+
+package "路由" {
+  [NameServer\nBroker 注册 / Topic 路由] as NS
+}
+
+package "Broker 计算" {
+  [Send Service] as SEND
+  [Pull Service\n长轮询] as PULL
+  [Consumer Manager\n位点 / Rebalance] as CM
+  [Retry / DLQ] as RT
+  [Delay / Timer] as DL
+  [Ordered Service] as ORD
+}
+
+package "事务" {
+  [Transaction API\nHalf / End / Check] as TXAPI
+  [Transaction Coordinator\n状态机 / 分片] as TC
+  [Check Scheduler\n退避 / 限流] as SCH
+  [Reconciler\n对账 / 补偿] as REC
+}
+
+package "存储" {
+  database "CommitLog" as CL
+  database "ConsumeQueue" as CQ
+  database "IndexFile" as IDX
+  database "Tx WAL" as TXW
+  database "Half Store" as HALF
+  database "Delay Log" as DLOG
+  database "Metadata / Offset\nredb" as META
+}
+
+package "复制/共识" {
+  [Master-Slave Replication\nISR / epoch] as REP
+  [Controller Raft\nopenraft] as CR
+  [TC Raft\nopenraft] as TR
+}
+
+R --> SEND
+R --> PULL
+R --> TXAPI
+G --> SEND
+G --> PULL
+G --> TXAPI
+H --> NS
+SEND --> CL
+PULL --> CQ
+PULL --> CL
+CM --> META
+RT --> CL
+DL --> DLOG
+DL --> CL
+ORD --> CL
+TXAPI --> TC
+TC --> TXW
+TC --> HALF
+TC --> CL : Commit 物化
+SCH --> TXW
+SCH --> TC
+REC --> TXW
+REC --> META
+CL --> CQ : Dispatch
+CL --> IDX
+CL --> REP
+TXW --> TR
+REP --> CR
+SEND --> META
+@enduml

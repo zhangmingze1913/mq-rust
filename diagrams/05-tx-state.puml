@@ -1,0 +1,24 @@
+@startuml
+!theme plain
+skinparam defaultFontName "Microsoft YaHei"
+skinparam dpi 160
+title MQ-rust 事务状态机
+
+[*] --> Prepared : Half 落盘 + TxRecord(Prepared)
+Prepared --> Committing : Commit / 回查确认 Commit
+Prepared --> RolledBack : Rollback / 回查确认 Rollback
+Prepared --> TimedOut : 超过 max_tx_age 且策略=rollback
+Committing --> Committed : 物化成功 + TxRecord(Committed)
+Committing --> Committing : 崩溃恢复重放（幂等）
+Committed --> [*]
+RolledBack --> [*]
+TimedOut --> RolledBack : 执行回滚
+TimedOut --> Committed : 人工/对账确认应提交
+
+note right of Committing
+  不变式：
+  1. Committed 必须有 materialized_offset
+  2. Committing 恢复时必须继续物化
+  3. Prepared 超时进入 TimedOut
+end note
+@enduml

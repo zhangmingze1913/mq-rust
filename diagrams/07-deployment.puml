@@ -1,0 +1,57 @@
+@startuml
+!theme plain
+skinparam defaultFontName "Microsoft YaHei"
+skinparam dpi 160
+skinparam componentStyle rectangle
+skinparam shadowing false
+title MQ-rust 生产部署拓扑（跨 AZ）
+
+package "AZ-1" {
+  [namesrv-1] as NS1
+  [broker-A master] as B1
+  [tc-1 leader] as T1
+  [proxy-1] as P1
+}
+
+package "AZ-2" {
+  [namesrv-2] as NS2
+  [broker-A slave] as B2
+  [tc-2] as T2
+  [proxy-2] as P2
+}
+
+package "AZ-3" {
+  [namesrv-3] as NS3
+  [broker-B master] as B3
+  [tc-3] as T3
+  [proxy-3] as P3
+}
+
+[LB / K8s Service] as LB
+
+LB --> P1
+LB --> P2
+LB --> P3
+P1 --> B1
+P2 --> B2
+P3 --> B3
+
+B1 <--> B2 : 同步复制
+NS1 <--> NS2 : 客户端合并
+NS2 <--> NS3 : 最终一致
+T1 <--> T2 : Raft
+T1 <--> T3 : Raft
+
+database "NVMe\nCommitLog / WAL" as D1
+database "NVMe\nCommitLog / WAL" as D2
+database "NVMe\nCommitLog / WAL" as D3
+B1 --> D1
+B2 --> D2
+B3 --> D3
+
+note bottom of T1
+  TC 独立部署，3/5 节点
+  Raft 只承载事务元数据
+  消息体走主从复制
+end note
+@enduml

@@ -1,0 +1,73 @@
+@startuml
+!theme plain
+skinparam defaultFontName "Microsoft YaHei"
+skinparam dpi 160
+skinparam componentStyle rectangle
+skinparam shadowing false
+title Apache RocketMQ 4.9 / 5.x 架构
+
+package "客户端" {
+  [DefaultMQProducer] as P
+  [DefaultMQPushConsumer] as C
+  [TransactionMQProducer] as TP
+  [mqadmin / Console] as A
+}
+
+package "NameServer 集群（无状态、最终一致）" {
+  [namesrv-1] as NS1
+  [namesrv-2] as NS2
+  [namesrv-3] as NS3
+}
+
+package "Broker 集群" {
+  package "Broker Group A" {
+    [Master A\nbrokerId=0] as MA
+    [Slave A\nbrokerId=1] as SA
+    MA --> SA : 同步/异步复制
+  }
+  package "Broker Group B" {
+    [Master B] as MB
+    [Slave B] as SB
+    MB --> SB : 同步/异步复制
+  }
+  [Controller Quorum\nopenraft / JRaft] as CTRL
+  CTRL ..> MA : 选主 / epoch / fencing
+  CTRL ..> MB
+}
+
+package "5.x Proxy（无状态）" {
+  [proxy-1] as PX1
+  [proxy-2] as PX2
+}
+
+P --> NS1 : 1. 拉取路由
+P --> MA : 2. Remoting 发送
+C --> NS1 : 1. 拉取路由
+C --> MA : 2. 拉取 / 长轮询
+C --> SA : 2. 从 Slave 读
+TP --> MA : Half / Commit / Rollback
+A --> NS1
+A --> MA
+
+PX1 --> P : gRPC
+PX2 --> C : gRPC
+PX1 --> MA : 内部 Remoting
+PX2 --> MB : 内部 Remoting
+
+package "Broker 内部存储" {
+  database "CommitLog\n1GB 顺序追加" as CL
+  database "ConsumeQueue\n20B/条" as CQ
+  database "IndexFile\nkey 哈希索引" as IDX
+  MA --> CL
+  MA --> CQ
+  MA --> IDX
+  CL --> CQ : Dispatch 异步
+  CL --> IDX : 异步
+}
+
+note bottom of CL
+  写：append → 刷盘（ASYNC/SYNC）→ 复制（ASYNC/SYNC）
+  读：ConsumeQueue → physicalOffset → CommitLog
+  事务：Half Topic + Op Topic + Check-back
+end note
+@enduml

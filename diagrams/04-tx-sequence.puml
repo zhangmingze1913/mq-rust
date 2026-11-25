@@ -1,0 +1,45 @@
+@startuml
+!theme plain
+skinparam defaultFontName "Microsoft YaHei"
+skinparam dpi 160
+skinparam sequenceMessageAlign center
+title MQ-rust 事务消息：正常提交 / 回查
+
+actor "业务应用" as App
+participant "TransactionProducer" as P
+participant "Broker / TC" as B
+participant "Half Store" as H
+participant "Tx WAL (Raft)" as L
+participant "本地数据库" as DB
+participant "Materializer" as M
+participant "真实 Topic" as T
+participant "Consumer" as C
+
+App -> P : sendMessageInTransaction(msg)
+P -> B : SEND_MESSAGE(txId, TRANSACTION_PREPARED)
+B -> H : append(half)
+B -> L : append(Prepared)
+L --> B : raft commit
+B --> P : SEND_OK(halfOffset)
+P -> DB : 执行本地事务
+alt 本地事务成功
+  P -> B : END_TRANSACTION(Commit)
+  B -> L : CAS Prepared -> Committing
+  B -> M : materialize(half)
+  M -> T : append(real message)
+  M -> L : CAS Committing -> Committed
+  B --> P : OK
+else 本地事务失败
+  P -> B : END_TRANSACTION(Rollback)
+  B -> L : CAS Prepared -> RolledBack
+  B --> P : OK
+else 网络异常 / Producer 崩溃
+  B -> B : 定时扫描到期事务
+  B -> P : CHECK_TRANSACTION_STATE(txId)
+  P -> DB : 按 txId 查询本地状态
+  P --> B : COMMIT / ROLLBACK / UNKNOWN
+  B -> L : 更新状态 / 退避
+end
+T --> C : 投递已提交消息
+C -> C : 业务 + Inbox + offset 同事务
+@enduml

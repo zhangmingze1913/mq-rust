@@ -1,0 +1,61 @@
+@startuml
+!theme plain
+skinparam defaultFontName "Microsoft YaHei"
+skinparam dpi 160
+skinparam componentStyle rectangle
+skinparam shadowing false
+title MQ-rust 技术架构（Crate 与运行时）
+
+package "接入层" {
+  [mq-proxy\ntonic / axum] as PROXY
+  [mq-protocol\nRemoting codec / gRPC] as PROTO
+}
+
+package "服务层" {
+  [mq-namesrv\n路由] as NS
+  [mq-broker\n收发/消费/重试/延时] as BROKER
+  [mq-admin\nCLI/API] as ADMIN
+}
+
+package "核心层" {
+  [mq-store\nCommitLog/CQ/Index/WAL] as STORE
+  [mq-txn\nTC/状态机/回查] as TXN
+}
+
+package "基础层" {
+  [mq-common\n配置/错误/类型] as COMMON
+  [mq-observability\nmetrics/tracing/audit] as OBS
+  [tokio\n异步运行时] as TOKIO
+  [openraft\nController/TC] as RAFT
+  [memmap2 + positioned-io\n存储 IO] as IO
+  [redb\n元数据/去重] as REDB
+}
+
+package "客户端" {
+  [mq-client\nRust SDK] as CLIENT
+  [mq-bench\n压测] as BENCH
+}
+
+PROXY --> PROTO
+PROXY --> BROKER
+BROKER --> STORE
+BROKER --> TXN
+NS --> BROKER
+ADMIN --> BROKER
+ADMIN --> NS
+TXN --> STORE
+TXN --> RAFT
+STORE --> IO
+STORE --> REDB
+BROKER --> TOKIO
+PROXY --> TOKIO
+TXN --> TOKIO
+COMMON --> PROTO
+COMMON --> STORE
+COMMON --> TXN
+COMMON --> OBS
+OBS --> BROKER
+OBS --> TXN
+CLIENT --> PROTO
+BENCH --> CLIENT
+@enduml

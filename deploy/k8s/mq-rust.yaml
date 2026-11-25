@@ -1,0 +1,215 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mq-rust
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mq-rust-namesrv
+  namespace: mq-rust
+spec:
+  selector:
+    app: mq-rust-namesrv
+  ports:
+    - name: remoting
+      port: 9877
+      targetPort: 9877
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mq-rust-namesrv
+  namespace: mq-rust
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mq-rust-namesrv
+  template:
+    metadata:
+      labels:
+        app: mq-rust-namesrv
+    spec:
+      containers:
+        - name: namesrv
+          image: mq-rust:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/local/bin/mq-namesrv
+            - --listen
+            - 0.0.0.0:9877
+            - --cluster
+            - DefaultCluster
+            - --broker-name
+            - broker-a
+            - --broker-addr
+            - mq-rust-broker:10921
+            - --queues
+            - "8"
+          ports:
+            - containerPort: 9877
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mq-rust-broker
+  namespace: mq-rust
+spec:
+  selector:
+    app: mq-rust-broker
+  ports:
+    - name: remoting
+      port: 10921
+      targetPort: 10921
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+    - name: admin
+      port: 9091
+      targetPort: 9091
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mq-rust-broker
+  namespace: mq-rust
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mq-rust-broker
+  template:
+    metadata:
+      labels:
+        app: mq-rust-broker
+    spec:
+      containers:
+        - name: broker
+          image: mq-rust:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/local/bin/mq-broker
+            - --listen
+            - 0.0.0.0:10921
+            - --namesrv
+            - mq-rust-namesrv:9877
+            - --queues
+            - "8"
+            - --metrics-listen
+            - 0.0.0.0:9090
+            - --admin-listen
+            - 0.0.0.0:9091
+            - --tc-url
+            - http://mq-rust-tc-0.mq-rust-tc:9191,http://mq-rust-tc-1.mq-rust-tc:9191,http://mq-rust-tc-2.mq-rust-tc:9191
+            - --tc-reconcile-ms
+            - "2000"
+            - --store-root
+            - /data/broker
+            - --audit-path
+            - /data/audit.log
+            - --inbox-path
+            - /data/inbox.log
+            - --tc-outbox-path
+            - /data/tc-outbox.log
+          ports:
+            - containerPort: 10921
+            - containerPort: 9090
+            - containerPort: 9091
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9091
+            initialDelaySeconds: 3
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mq-rust-tc
+  namespace: mq-rust
+  labels:
+    app: mq-rust-tc
+spec:
+  clusterIP: None
+  selector:
+    app: mq-rust-tc
+  ports:
+    - name: raft
+      port: 19301
+      targetPort: 19301
+    - name: api
+      port: 9191
+      targetPort: 9191
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mq-rust-tc
+  namespace: mq-rust
+spec:
+  serviceName: mq-rust-tc
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: mq-rust-tc
+  template:
+    metadata:
+      labels:
+        app: mq-rust-tc
+    spec:
+      containers:
+        - name: tc
+          image: mq-rust:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              ID="${HOSTNAME##*-}"
+              exec /usr/local/bin/mq-tc --id "$ID" \
+                --raft-listen 0.0.0.0:19301 \
+                --api-listen 0.0.0.0:9191 \
+                --peers "0@mq-rust-tc-0.mq-rust-tc:19301,1@mq-rust-tc-1.mq-rust-tc:19301,2@mq-rust-tc-2.mq-rust-tc:19301" \
+                --data-dir /data/tc
+          ports:
+            - containerPort: 19301
+            - containerPort: 9191
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

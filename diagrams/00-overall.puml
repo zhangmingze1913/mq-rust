@@ -1,0 +1,79 @@
+@startuml
+!theme plain
+skinparam defaultFontName "Microsoft YaHei"
+skinparam dpi 160
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam roundcorner 8
+title MQ-rust 总体架构
+
+package "客户端 Client" {
+  [Java SDK 4.9.x\nRemoting] as J4
+  [Java SDK 5.x\ngRPC] as J5
+  [Rust / Go / Python SDK] as SDK
+  [mqadmin / Console] as ADMIN
+}
+
+package "接入层 Access" {
+  [Remoting Server\n9876 / 10911] as REM
+  [gRPC Proxy\n8081] as PROXY
+  [HTTP Admin / OpenAPI\n8080] as HTTP
+  [Auth / ACL / TLS] as AUTH
+}
+
+package "服务层 Service（无状态）" {
+  [NameServer\n路由注册/发现] as NS
+  [Producer Service\n校验/路由/重试] as PS
+  [Consumer Service\n拉取/长轮询/位点] as CS
+  [Transaction Service\nHalf/Commit/Rollback] as TXS
+  [Scheduler\n延时/重试/回查] as SCH
+  [Admin Service\nTopic/Group/ACL] as ADS
+}
+
+package "核心层 Core（有状态）" {
+  [Transaction Coordinator\n状态机 + 分片] as TC
+  [Store\nCommitLog / ConsumeQueue / Index] as ST
+  [Replication\n主从 / ISR / fencing] as REP
+  [Metadata\nTopic / Group / Config] as META
+}
+
+package "基础设施 Infra" {
+  database "本地 NVMe\nCommitLog + WAL" as DISK
+  database "对象存储\n冷数据/备份（P2）" as OBJ
+  [Controller Raft\nopenraft] as CTRL
+  [TC Raft\nopenraft] as TCR
+  [Prometheus / Grafana / OTel] as OBS
+}
+
+J4 --> REM
+J5 --> PROXY
+SDK --> REM
+ADMIN --> HTTP
+REM --> AUTH
+PROXY --> AUTH
+AUTH --> PS
+AUTH --> CS
+AUTH --> TXS
+HTTP --> ADS
+
+PS --> ST
+CS --> ST
+TXS --> TC
+TXS --> ST
+SCH --> ST
+NS --> META
+ADS --> META
+
+TC --> TCR
+REP --> CTRL
+ST --> REP
+ST --> DISK
+ST --> OBJ
+TC --> ST
+
+PS --> OBS
+CS --> OBS
+TXS --> OBS
+ST --> OBS
+TC --> OBS
+@enduml

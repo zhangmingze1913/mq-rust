@@ -1,0 +1,67 @@
+@startmindmap
+!theme plain
+skinparam defaultFontName "Microsoft YaHei"
+skinparam dpi 140
+title MQ-rust 功能图谱
+
+* MQ-rust
+** 接入与协议
+*** Remoting 4.9
+*** gRPC Proxy 5.x
+*** HTTP Admin
+*** Java / Rust / Go SDK
+** 消息模型
+*** Topic / Queue
+*** Producer / Consumer Group
+*** 集群 / 广播
+*** Tag / SQL92
+** 消息类型
+*** 普通
+*** 顺序
+*** 事务
+*** 定时 / 延时
+*** 批量
+*** 死信 / 重试
+** 存储
+*** CommitLog
+*** ConsumeQueue
+*** IndexFile
+*** 刷盘 / 组提交
+*** 保留 / 冷读
+*** 分层存储
+** 事务
+*** Half Message
+*** Tx WAL
+*** Commit / Rollback
+*** 回查 / 超时
+*** TC Raft
+*** 幂等 / Inbox
+*** 对账 / 补偿
+** 高可用
+*** 主从复制
+*** 同步 / 异步
+*** Controller
+*** ISR / fencing
+*** 跨 Region
+** 消费
+*** Push / Pull
+*** 长轮询
+*** 位点 / Rebalance
+*** 流控 / 背压
+*** 重试 / DLQ
+** 运维
+*** Topic / Group / ACL
+*** CLI / Console
+*** 扩缩容 / 迁移
+*** 升级 / 回滚
+*** 诊断包
+** 可观测
+*** Prometheus
+*** OpenTelemetry
+*** 审计
+*** Dashboard / 告警
+** 安全
+*** ACL
+*** TLS / mTLS
+*** 多租户 / 配额
+@endmindmap

@@ -1,0 +1,52 @@
+@startuml
+!theme plain
+skinparam defaultFontName "Microsoft YaHei"
+skinparam dpi 160
+skinparam componentStyle rectangle
+skinparam shadowing false
+title NSQ 架构与消息流
+
+actor "Producer" as P
+actor "Consumer" as C
+
+package "nsqlookupd 集群（相互不通信，最终一致）" {
+  [nsqlookupd-1] as L1
+  [nsqlookupd-2] as L2
+}
+
+package "nsqd 集群（无副本，各自独立）" {
+  [nsqd-1\nTopic: orders\nChannel: inventory/risk] as N1
+  [nsqd-2\nTopic: orders\nChannel: inventory/risk] as N2
+  [nsqd-3\nTopic: payments\nChannel: ledger] as N3
+}
+
+package "运维" {
+  [nsqadmin] as A
+  [statsd / stats] as S
+}
+
+P --> N1 : PUB / MPUB
+P --> N2 : PUB / MPUB
+N1 ..> L1 : 注册 / 心跳
+N2 ..> L2 : 注册 / 心跳
+N3 ..> L1 : 注册 / 心跳
+
+C --> L1 : /lookup
+C --> L2 : /lookup
+C --> N1 : SUB + RDY
+C --> N2 : SUB + RDY
+C --> N3 : SUB + RDY
+
+A --> L1 : HTTP API
+A --> N1 : HTTP API
+N1 --> S : depth / in-flight / requeue
+N2 --> S
+N3 --> S
+
+note right of N1
+  Topic → Channel：每个 Channel 收到全量拷贝
+  Channel → Consumer：同组竞争消费
+  内存队列 + DiskQueue 溢出
+  无副本、无顺序、无事务
+end note
+@enduml
