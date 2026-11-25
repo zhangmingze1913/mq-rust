@@ -123,6 +123,10 @@ struct Args {
     broker_id: String,
     #[arg(long, default_value_t = 5000)]
     lease_ttl_ms: u64,
+    #[arg(long)]
+    advertise: Option<String>,
+    #[arg(long)]
+    namesrv_admin: Option<String>,
     #[arg(long, default_value_t = 2000)]
     tc_reconcile_ms: u64,
     #[arg(long, default_value = "./data/tc-outbox.log")]
@@ -495,11 +499,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .filter(|url| !url.is_empty())
                 .map(str::to_string)
                 .collect::<Vec<_>>();
+            let advertise = args
+                .advertise
+                .clone()
+                .unwrap_or_else(|| format!("127.0.0.1:{}", listen.port()));
+            let route_admin = args
+                .namesrv_admin
+                .as_ref()
+                .map(|admin| (admin.clone(), advertise));
             mq_broker::server::spawn_leader_lease(
                 urls,
                 args.broker_id.clone(),
                 std::sync::Arc::clone(&config.read_only),
                 args.lease_ttl_ms.max(1000),
+                route_admin,
             );
         }
     }

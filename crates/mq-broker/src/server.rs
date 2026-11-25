@@ -135,10 +135,12 @@ pub fn spawn_leader_lease(
     candidate: String,
     read_only: Arc<std::sync::atomic::AtomicBool>,
     ttl_ms: u64,
+    route_admin: Option<(String, String)>,
 ) {
     std::thread::spawn(move || {
         use std::io::{Read, Write};
         let mut failures = 0u32;
+        let mut was_holder = false;
         loop {
             let mut holder: Option<String> = None;
             for base in &tc_urls {
@@ -174,6 +176,20 @@ pub fn spawn_leader_lease(
                     failures = 0;
                     let is_holder = holder == candidate;
                     read_only.store(!is_holder, Ordering::Relaxed);
+                    if is_holder && !was_holder {
+                        if let Some((admin, advertise)) = &route_admin {
+                            let addr = admin.trim_start_matches("http://").trim_end_matches('/');
+                            if let Ok(mut stream) = std::net::TcpStream::connect(addr) {
+                                let _ = stream.set_write_timeout(Some(Duration::from_millis(1500)));
+                                let req = format!(
+                                    "POST /broker/{advertise} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                                );
+                                let _ = stream.write_all(req.as_bytes());
+                                tracing::info!(%advertise, "published leader route to namesrv");
+                            }
+                        }
+                    }
+                    was_holder = is_holder;
                     tracing::debug!(%holder, %candidate, is_holder, "leader lease refreshed");
                 }
                 None => {
