@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package mqrust.admin.v1;
+
+service Admin {
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc Stats(StatsRequest) returns (StatsResponse);
+  rpc TxStatus(TxStatusRequest) returns (TxStatusResponse);
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+  string version = 2;
+}
+
+message StatsRequest {}
+
+message StatsResponse {
+  uint64 send_total = 1;
+  uint64 message_bytes = 2;
+  uint64 commitlog_bytes = 3;
+  uint64 pending_half = 4;
+  uint32 topics = 5;
+}
+
+message TxStatusRequest {
+  string tx_id = 1;
+}
+
+message TxStatusResponse {
+  string tx_id = 1;
+  bool pending = 2;
+}

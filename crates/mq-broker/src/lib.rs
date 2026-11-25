@@ -7,6 +7,7 @@ pub mod admin;
 pub mod audit;
 pub mod connections;
 pub mod filter;
+pub mod grpc;
 pub mod hmac;
 pub mod inbox;
 pub mod metrics;

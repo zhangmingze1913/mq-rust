@@ -37,6 +37,8 @@ struct Args {
     tx_check_max: u32,
     #[arg(long, default_value = "127.0.0.1:9091")]
     admin_listen: String,
+    #[arg(long)]
+    grpc_listen: Option<std::net::SocketAddr>,
     #[arg(long, default_value = "./data/audit.log")]
     audit_path: String,
     #[arg(long, default_value = "./data/inbox.log")]
@@ -473,6 +475,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         tls_client_ca: args.tls_client_ca.clone(),
     };
     tracing::info!(namesrv = %args.namesrv, "broker configured (static route in R1)");
+    if let Some(addr) = args.grpc_listen {
+        let store = std::sync::Arc::clone(&config.store);
+        let metrics = std::sync::Arc::clone(&config.metrics);
+        tokio::spawn(async move {
+            if let Err(err) = mq_broker::grpc::serve(addr, store, metrics).await {
+                tracing::warn!(%addr, error = %err, "grpc admin server stopped");
+            }
+        });
+    }
     run(config).await?;
     Ok(())
 }

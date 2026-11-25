@@ -17,6 +17,8 @@ serde.workspace = true
 serde_json.workspace = true
 tokio-rustls.workspace = true
 rustls-pemfile.workspace = true
+tonic.workspace = true
+prost.workspace = true
 
 [[bin]]
 name = "mq-broker"
