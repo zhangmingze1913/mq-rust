@@ -53,6 +53,8 @@ server log: peer sent no certificates
 
 broker/namesrv 仍报 `peer sent no certificates`，**Java 客户端 mTLS 未跑通**。单向 TLS（R157）不受影响。
 
+> 后续：R160 已修复 Java 客户端 mTLS（需 `tls.test.mode.enable=false`）。
+
 ## 5. 限制
 
 - mTLS 服务端已验证，Java mTLS 待排查（证书链/KeyManager 配置）；
