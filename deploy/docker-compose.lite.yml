@@ -45,7 +45,7 @@ services:
     ports:
       - "10921:10921"
       - "9090:9090"
-      - "9091:9091"
+      - "9192:9091"
     volumes:
       - mqdata:/data
     networks: [mqnet]

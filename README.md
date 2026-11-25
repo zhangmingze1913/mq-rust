@@ -3,7 +3,7 @@
 > Rust 实现的分布式事务消息中间件，兼容 Apache RocketMQ 4.9.x Remoting 协议与 Java SDK。
 > 面向电商/金融等对“低延迟、高可靠、可审计、最终一致”有要求的场景。
 
-- **当前阶段**：R1–R145 完成；K8s broker PVC 重建 15/15
+- **当前阶段**：R1–R146 完成；容器内 14 类 SDK 矩阵通过
 - **测试**：82 项 Rust 测试通过；RocketMQ 4.9.8 Java SDK 全量回归通过
 - **性能**：单条 100k 长跑 **9,347 TPS**；1M 长跑 **8,438 TPS/0 失败**；批量 64 条 **24,982 msg/s**；消费 20 线程 **11,130 TPS**
 - **目标**：兼容 RocketMQ 协议/SDK 的单机事务消息中间件 + TC Raft 集群
@@ -217,9 +217,10 @@ Producer/Consumer (RocketMQ Java SDK)
 | [R143-K8s探针](docs/rounds/R143-k8s-probes.md) | 探针/终止 |
 | [R144-K8s TC](docs/rounds/R144-k8s-tc-leader.md) | leader=2 |
 | [R145-K8s PVC](docs/rounds/R145-k8s-broker-pvc.md) | 重建 15/15 |
+| [R146-容器矩阵](docs/rounds/R146-container-sdk-matrix.md) | 14 类通过 |
 | [图表索引](docs/图表索引.md) | PNG/PlantUML |
 
-分阶段报告：`docs/rounds/R01.md` … `R145-k8s-broker-pvc.md`；最终验收见 [16-最终验收报告](docs/16-最终验收报告.md)，交付说明见 [21-最终交付说明](docs/21-最终交付说明.md)，交付索引见 [20-交付索引](docs/20-交付索引.md)。
+分阶段报告：`docs/rounds/R01.md` … `R146-container-sdk-matrix.md`；最终验收见 [16-最终验收报告](docs/16-最终验收报告.md)，交付说明见 [21-最终交付说明](docs/21-最终交付说明.md)，交付索引见 [20-交付索引](docs/20-交付索引.md)。
 
 Windows 分发包：[mq-rust-0.9.0-rc.1-win64.zip](dist/mq-rust-0.9.0-rc.1-win64.zip)。
 
