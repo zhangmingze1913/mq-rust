@@ -1,0 +1,60 @@
+{
+  "uid": "mq-rust",
+  "title": "MQ-rust Broker",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Send TPS",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "rate(mq_broker_send_total[1m])" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Pull TPS",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "rate(mq_broker_pull_total[1m])" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Topics",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "mq_broker_store_topics" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Pending half",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "mq_broker_tx_pending" }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "CommitLog bytes",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "mq_broker_commitlog_bytes" }
+      ]
+    }
+  ]
+}
