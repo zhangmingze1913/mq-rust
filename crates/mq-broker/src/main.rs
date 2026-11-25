@@ -79,6 +79,8 @@ struct Args {
     trace_capacity: usize,
     #[arg(long)]
     trace_path: Option<std::path::PathBuf>,
+    #[arg(long, default_value_t = 67108864)]
+    trace_max_bytes: u64,
     #[arg(long)]
     sync_replicate: bool,
     #[arg(long, default_value_t = 1000)]
@@ -117,7 +119,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )?);
     let audit = Arc::new(AuditLog::open(&args.audit_path)?);
     let trace = Arc::new(match &args.trace_path {
-        Some(path) => mq_broker::trace::TraceLog::open(args.trace_capacity, path)?,
+        Some(path) => mq_broker::trace::TraceLog::open_with_limit(
+            args.trace_capacity,
+            path,
+            args.trace_max_bytes,
+        )?,
         None => mq_broker::trace::TraceLog::new(args.trace_capacity),
     });
     let read_only = Arc::new(std::sync::atomic::AtomicBool::new(false));
