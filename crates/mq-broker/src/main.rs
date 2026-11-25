@@ -117,6 +117,12 @@ struct Args {
     group_commit: bool,
     #[arg(long)]
     tc_url: Option<String>,
+    #[arg(long, default_value_t = false)]
+    leader_lease: bool,
+    #[arg(long, default_value = "broker-a")]
+    broker_id: String,
+    #[arg(long, default_value_t = 5000)]
+    lease_ttl_ms: u64,
     #[arg(long, default_value_t = 2000)]
     tc_reconcile_ms: u64,
     #[arg(long, default_value = "./data/tc-outbox.log")]
@@ -481,6 +487,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
         tls_client_ca: args.tls_client_ca.clone(),
     };
     tracing::info!(namesrv = %args.namesrv, "broker configured (static route in R1)");
+    if args.leader_lease {
+        if let Some(tc_url) = &args.tc_url {
+            let urls = tc_url
+                .split(',')
+                .map(str::trim)
+                .filter(|url| !url.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            mq_broker::server::spawn_leader_lease(
+                urls,
+                args.broker_id.clone(),
+                std::sync::Arc::clone(&config.read_only),
+                args.lease_ttl_ms.max(1000),
+            );
+        }
+    }
     if let Some(addr) = args.grpc_listen {
         let store = std::sync::Arc::clone(&config.store);
         let metrics = std::sync::Arc::clone(&config.metrics);

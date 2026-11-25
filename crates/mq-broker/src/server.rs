@@ -16,6 +16,7 @@ use mq_protocol::request_code;
 use mq_protocol::response_code;
 use mq_protocol::{decode_frame, RemotingCommand};
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -127,6 +128,64 @@ pub async fn run(config: BrokerConfig) -> std::io::Result<()> {
             }
         });
     }
+}
+
+pub fn spawn_leader_lease(
+    tc_urls: Vec<String>,
+    candidate: String,
+    read_only: Arc<std::sync::atomic::AtomicBool>,
+    ttl_ms: u64,
+) {
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let mut failures = 0u32;
+        loop {
+            let mut holder: Option<String> = None;
+            for base in &tc_urls {
+                let addr = base
+                    .trim_start_matches("http://")
+                    .trim_start_matches("https://")
+                    .trim_end_matches('/');
+                let Ok(mut stream) = std::net::TcpStream::connect(addr) else {
+                    continue;
+                };
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(1500)));
+                let req = format!(
+                    "GET /lease?candidate={candidate}&ttl_ms={ttl_ms} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+                );
+                if stream.write_all(req.as_bytes()).is_err() {
+                    continue;
+                }
+                let mut buf = [0u8; 1024];
+                let Ok(n) = stream.read(&mut buf) else {
+                    continue;
+                };
+                let text = String::from_utf8_lossy(&buf[..n]);
+                if let Some(start) = text.find("\"holder\":\"") {
+                    let rest = &text[start + "\"holder\":\"".len()..];
+                    if let Some(end) = rest.find('"') {
+                        holder = Some(rest[..end].to_string());
+                        break;
+                    }
+                }
+            }
+            match holder {
+                Some(holder) => {
+                    failures = 0;
+                    let is_holder = holder == candidate;
+                    read_only.store(!is_holder, Ordering::Relaxed);
+                    tracing::debug!(%holder, %candidate, is_holder, "leader lease refreshed");
+                }
+                None => {
+                    failures += 1;
+                    if failures >= 3 {
+                        read_only.store(true, Ordering::Relaxed);
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(ttl_ms / 2));
+        }
+    });
 }
 
 fn build_tls_acceptor(config: &BrokerConfig) -> std::io::Result<Option<tokio_rustls::TlsAcceptor>> {

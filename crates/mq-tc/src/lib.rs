@@ -397,6 +397,35 @@ impl Tc {
         self.write_status(tx_id, "rolled_back").await
     }
 
+    /// Raft-backed exclusive broker lease. The TC leader serializes grants;
+    /// followers must redirect the caller to the leader.
+    pub async fn lease(&self, candidate: &str, ttl_ms: u64) -> Result<(String, u64), String> {
+        static LEASE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _guard = LEASE_LOCK.lock().await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let current = self.status.read().await.get("__lease__").cloned();
+        let (holder, term, expiry) = current
+            .as_deref()
+            .and_then(|value| {
+                let mut parts = value.split('|');
+                let holder = parts.next()?.to_string();
+                let term = parts.next()?.parse::<u64>().ok()?;
+                let expiry = parts.next()?.parse::<u64>().ok()?;
+                Some((holder, term, expiry))
+            })
+            .unwrap_or_default();
+        if !holder.is_empty() && holder != candidate && expiry > now {
+            return Ok((holder, term));
+        }
+        let next_term = term.saturating_add(1);
+        let value = format!("{candidate}|{next_term}|{}", now + ttl_ms);
+        self.write_status("__lease__", &value).await?;
+        Ok((candidate.to_string(), next_term))
+    }
+
     pub async fn status(&self, tx_id: &str) -> Option<String> {
         self.status.read().await.get(tx_id).cloned()
     }
@@ -421,6 +450,15 @@ impl Tc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn lease_excludes_second_holder_until_expiry() {
+        let tc = Tc::start_cluster(11, vec![11]).await.unwrap();
+        assert_eq!(tc.lease("a", 1000).await.unwrap().0, "a");
+        assert_eq!(tc.lease("b", 1000).await.unwrap().0, "a");
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        assert_eq!(tc.lease("b", 1000).await.unwrap().0, "b");
+    }
 
     #[tokio::test]
     async fn single_node_prepare_commit() {

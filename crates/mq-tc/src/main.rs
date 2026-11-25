@@ -108,7 +108,42 @@ async fn handle(mut stream: TcpStream, tc: Arc<Tc>) -> std::io::Result<()> {
     let method = parts.next().unwrap_or("GET");
     let path = parts.next().unwrap_or("/");
 
-    let (status, body) = if path == "/leader" {
+    let (status, body) = if path.starts_with("/lease") {
+        let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+        let mut candidate = "";
+        let mut ttl_ms = 5000u64;
+        for pair in query.split('&') {
+            if let Some((key, value)) = pair.split_once('=') {
+                match key {
+                    "candidate" => candidate = value,
+                    "ttl_ms" => ttl_ms = value.parse().unwrap_or(5000).clamp(1000, 60000),
+                    _ => {}
+                }
+            }
+        }
+        if candidate.is_empty() {
+            (
+                "400 Bad Request",
+                "{\"error\":\"missing candidate\"}".to_string(),
+            )
+        } else if !tc.is_leader() {
+            (
+                "503 Service Unavailable",
+                "{\"error\":\"not leader\"}".to_string(),
+            )
+        } else {
+            match tc.lease(candidate, ttl_ms).await {
+                Ok((holder, term)) => (
+                    "200 OK",
+                    format!("{{\"holder\":\"{holder}\",\"term\":{term}}}"),
+                ),
+                Err(e) => (
+                    "500 Internal Server Error",
+                    format!("{{\"error\":\"{e}\"}}"),
+                ),
+            }
+        }
+    } else if path == "/leader" {
         let leader = tc.current_leader().await;
         let leader_json = leader
             .map(|v| v.to_string())
