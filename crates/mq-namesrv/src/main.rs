@@ -33,6 +33,8 @@ struct Args {
     tls_cert: Option<String>,
     #[arg(long)]
     tls_key: Option<String>,
+    #[arg(long)]
+    tls_client_ca: Option<String>,
 }
 
 #[tokio::main]
@@ -78,6 +80,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         route_file: args.route_file.map(Into::into),
         tls_cert: args.tls_cert,
         tls_key: args.tls_key,
+        tls_client_ca: args.tls_client_ca,
     };
     run(config).await?;
     Ok(())

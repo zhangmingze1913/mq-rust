@@ -32,6 +32,7 @@ pub struct NameServerConfig {
     pub route_file: Option<std::path::PathBuf>,
     pub tls_cert: Option<String>,
     pub tls_key: Option<String>,
+    pub tls_client_ca: Option<String>,
 }
 
 pub async fn run(config: NameServerConfig) -> std::io::Result<()> {
@@ -84,8 +85,23 @@ fn build_tls_acceptor(
         .ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "missing private key")
         })?;
-    let server = tokio_rustls::rustls::ServerConfig::builder()
-        .with_no_client_auth()
+    let builder = tokio_rustls::rustls::ServerConfig::builder();
+    let builder = if let Some(ca) = &config.tls_client_ca {
+        let mut ca_reader = std::io::BufReader::new(std::fs::File::open(ca)?);
+        let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+        for cert in rustls_pemfile::certs(&mut ca_reader) {
+            roots
+                .add(cert.map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        }
+        let verifier = tokio_rustls::rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
+            .build()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        builder.with_client_cert_verifier(verifier)
+    } else {
+        builder.with_no_client_auth()
+    };
+    let server = builder
         .with_single_cert(certs, key)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     Ok(Some(tokio_rustls::TlsAcceptor::from(Arc::new(server))))
@@ -307,6 +323,7 @@ mod tests {
             route_file: None,
             tls_cert: None,
             tls_key: None,
+            tls_client_ca: None,
         }
     }
 
