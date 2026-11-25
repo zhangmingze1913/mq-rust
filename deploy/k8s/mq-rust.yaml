@@ -210,6 +210,15 @@ spec:
         app: mq-rust-tc
     spec:
       terminationGracePeriodSeconds: 20
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: mq-rust-tc
+                topologyKey: kubernetes.io/hostname
       containers:
         - name: tc
           image: mq-rust:latest
