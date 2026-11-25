@@ -919,6 +919,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mq-raft"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "openraft",
+ "openraft-memstore",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "mq-store"
 version = "0.1.0"
 dependencies = [

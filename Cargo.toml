@@ -10,6 +10,7 @@ members = [
     "crates/mq-observability",
     "crates/mq-client",
     "crates/mq-tc",
+    "crates/mq-raft",
 ]
 
 [workspace.package]
