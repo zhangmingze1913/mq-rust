@@ -1,5 +1,5 @@
 # MQ-rust: NameServer + Broker + TC (Raft) — single image
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.100-bookworm AS builder
 WORKDIR /build
 COPY Cargo.toml Cargo.lock* ./
 COPY crates ./crates

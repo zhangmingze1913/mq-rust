@@ -24,11 +24,12 @@ services:
     networks: [mqnet]
 
   mq-rust-namesrv:
+    image: mq-rust:0.9.0-rc.1
+    entrypoint: ["/usr/local/bin/mq-namesrv"]
     build:
       context: ..
       dockerfile: deploy/Dockerfile
     command:
-      - /usr/local/bin/mq-namesrv
       - --listen
       - 0.0.0.0:9877
       - --cluster
@@ -36,7 +37,7 @@ services:
       - --broker-name
       - broker-a
       - --broker-addr
-      - mq-rust-broker:10921
+      - 127.0.0.1:10921
       - --queues
       - "8"
     ports:
@@ -44,11 +45,12 @@ services:
     networks: [mqnet]
 
   mq-rust-broker:
+    image: mq-rust:0.9.0-rc.1
+    entrypoint: ["/usr/local/bin/mq-broker"]
     build:
       context: ..
       dockerfile: deploy/Dockerfile
     command:
-      - /usr/local/bin/mq-broker
       - --listen
       - 0.0.0.0:10921
       - --namesrv
@@ -77,6 +79,8 @@ services:
     networks: [mqnet]
 
   mq-rust-tc-1:
+    image: mq-rust:0.9.0-rc.1
+    entrypoint: ["/usr/local/bin/mq-tc"]
     build:
       context: ..
       dockerfile: deploy/Dockerfile
@@ -99,6 +103,8 @@ services:
     networks: [mqnet]
 
   mq-rust-tc-2:
+    image: mq-rust:0.9.0-rc.1
+    entrypoint: ["/usr/local/bin/mq-tc"]
     build:
       context: ..
       dockerfile: deploy/Dockerfile
@@ -121,6 +127,8 @@ services:
     networks: [mqnet]
 
   mq-rust-tc-3:
+    image: mq-rust:0.9.0-rc.1
+    entrypoint: ["/usr/local/bin/mq-tc"]
     build:
       context: ..
       dockerfile: deploy/Dockerfile

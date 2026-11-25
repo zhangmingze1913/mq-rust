@@ -180,7 +180,10 @@ impl TraceLog {
     ) {
         if self.writer.is_some() && self.sample > 1 {
             let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-            if !seq.is_multiple_of(u64::from(self.sample)) {
+            let sampled = seq
+                .checked_rem(u64::from(self.sample))
+                .is_some_and(|rem| rem == 0);
+            if !sampled {
                 return;
             }
         }

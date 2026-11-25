@@ -151,6 +151,7 @@ metadata:
     app: mq-rust-tc
 spec:
   clusterIP: None
+  publishNotReadyAddresses: true
   selector:
     app: mq-rust-tc
   ports:
@@ -186,11 +187,11 @@ spec:
             - /bin/sh
             - -c
             - |
-              ID="${HOSTNAME##*-}"
+              ID=$(( ${HOSTNAME##*-} + 1 ))
               exec /usr/local/bin/mq-tc --id "$ID" \
                 --raft-listen 0.0.0.0:19301 \
                 --api-listen 0.0.0.0:9191 \
-                --peers "0@mq-rust-tc-0.mq-rust-tc:19301,1@mq-rust-tc-1.mq-rust-tc:19301,2@mq-rust-tc-2.mq-rust-tc:19301" \
+                --peers "1@mq-rust-tc-0.mq-rust-tc:19301,2@mq-rust-tc-1.mq-rust-tc:19301,3@mq-rust-tc-2.mq-rust-tc:19301" \
                 --data-dir /data/tc
           ports:
             - containerPort: 19301
