@@ -1,10 +1,14 @@
-//! Bounded in-memory message trace with optional JSONL persistence.
+//! Bounded in-memory message trace with optional rotated JSONL persistence.
 
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::io::Write;
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::SyncSender;
 use std::sync::Mutex;
+use std::thread::JoinHandle;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceEvent {
@@ -25,11 +29,84 @@ fn rotated_path(path: &Path) -> PathBuf {
     ))
 }
 
+struct TraceWriter {
+    file: BufWriter<File>,
+    bytes: u64,
+    writes: u64,
+}
+
+impl TraceWriter {
+    fn open(path: &Path) -> std::io::Result<Self> {
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        let bytes = file.metadata()?.len();
+        Ok(Self {
+            file: BufWriter::with_capacity(64 * 1024, file),
+            bytes,
+            writes: 0,
+        })
+    }
+
+    fn flush(&mut self) {
+        let _ = self.file.flush();
+    }
+}
+
+struct WriterHandle {
+    tx: Option<SyncSender<Vec<u8>>>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl WriterHandle {
+    fn spawn(path: PathBuf, max_bytes: u64) -> Self {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(65536);
+        let join = std::thread::spawn(move || {
+            let mut writer = TraceWriter::open(&path).ok();
+            while let Ok(line) = rx.recv() {
+                let Some(w) = writer.as_mut() else { continue };
+                if w.file.write_all(&line).is_err() || w.file.write_all(b"\n").is_err() {
+                    continue;
+                }
+                w.bytes += line.len() as u64 + 1;
+                w.writes += 1;
+                if w.writes % 64 == 0 {
+                    w.flush();
+                }
+                if w.bytes >= max_bytes {
+                    if let Some(mut old) = writer.take() {
+                        old.flush();
+                    }
+                    let rotated = rotated_path(&path);
+                    let _ = std::fs::remove_file(&rotated);
+                    let _ = std::fs::rename(&path, rotated);
+                    writer = TraceWriter::open(&path).ok();
+                }
+            }
+            if let Some(mut w) = writer.take() {
+                w.flush();
+            }
+        });
+        Self {
+            tx: Some(tx),
+            join: Some(join),
+        }
+    }
+}
+
+impl Drop for WriterHandle {
+    fn drop(&mut self) {
+        self.tx.take();
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
 pub struct TraceLog {
     capacity: usize,
     events: Mutex<VecDeque<TraceEvent>>,
-    path: Option<PathBuf>,
-    max_bytes: u64,
+    writer: Option<WriterHandle>,
+    sample: u32,
+    seq: AtomicU64,
 }
 
 impl TraceLog {
@@ -37,8 +114,9 @@ impl TraceLog {
         Self {
             capacity: capacity.max(1),
             events: Mutex::new(VecDeque::with_capacity(capacity.max(1))),
-            path: None,
-            max_bytes: 0,
+            writer: None,
+            sample: 1,
+            seq: AtomicU64::new(0),
         }
     }
 
@@ -53,6 +131,16 @@ impl TraceLog {
         capacity: usize,
         path: impl AsRef<Path>,
         max_bytes: u64,
+    ) -> std::io::Result<Self> {
+        Self::open_with_sample(capacity, path, max_bytes, 1)
+    }
+
+    /// Persist only every `sample`-th event; every event stays in memory.
+    pub fn open_with_sample(
+        capacity: usize,
+        path: impl AsRef<Path>,
+        max_bytes: u64,
+        sample: u32,
     ) -> std::io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
@@ -75,8 +163,9 @@ impl TraceLog {
         Ok(Self {
             capacity: capacity.max(1),
             events: Mutex::new(events),
-            path: Some(path),
-            max_bytes: max_bytes.max(1),
+            writer: Some(WriterHandle::spawn(path, max_bytes.max(1))),
+            sample: sample.max(1),
+            seq: AtomicU64::new(0),
         })
     }
 
@@ -89,6 +178,12 @@ impl TraceLog {
         msg_id: &str,
         group: Option<&str>,
     ) {
+        if self.writer.is_some() && self.sample > 1 {
+            let seq = self.seq.fetch_add(1, Ordering::Relaxed);
+            if !seq.is_multiple_of(u64::from(self.sample)) {
+                return;
+            }
+        }
         let event = TraceEvent {
             event: event.into(),
             msg_id: msg_id.to_string(),
@@ -98,24 +193,10 @@ impl TraceLog {
             group: group.map(str::to_string),
             timestamp: mq_common::now_ms(),
         };
-        if let Some(path) = &self.path {
-            if let Ok(mut file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-            {
-                if let Ok(line) = serde_json::to_string(&event) {
-                    let _ = writeln!(file, "{line}");
-                }
-                let oversized = file
-                    .metadata()
-                    .map(|meta| meta.len() > self.max_bytes)
-                    .unwrap_or(false);
-                drop(file);
-                if oversized {
-                    let rotated = rotated_path(path);
-                    let _ = std::fs::remove_file(&rotated);
-                    let _ = std::fs::rename(path, rotated);
+        if let Some(writer) = &self.writer {
+            if let Ok(line) = serde_json::to_string(&event) {
+                if let Some(tx) = &writer.tx {
+                    let _ = tx.try_send(line.into_bytes());
                 }
             }
         }
@@ -183,9 +264,8 @@ mod tests {
         {
             let trace = TraceLog::open_with_limit(10, &path, 1).unwrap();
             trace.record("send", "t", 0, 0, "m1", None);
-            assert!(!path.exists());
-            assert!(rotated.exists());
         }
+        assert!(rotated.exists());
         let reopened = TraceLog::open_with_limit(10, &path, 1).unwrap();
         assert_eq!(reopened.by_msg_id("m1").len(), 1);
         let _ = std::fs::remove_file(&path);
