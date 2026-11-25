@@ -68,6 +68,10 @@ struct Args {
     #[arg(long)]
     admin_token: Option<String>,
     #[arg(long)]
+    tls_cert: Option<String>,
+    #[arg(long)]
+    tls_key: Option<String>,
+    #[arg(long)]
     acl_access_keys: Option<String>,
     #[arg(long)]
     acl_secrets: Option<String>,
@@ -456,6 +460,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         acl_secrets,
         acl_policy,
         trace,
+        tls_cert: args.tls_cert.clone(),
+        tls_key: args.tls_key.clone(),
     };
     tracing::info!(namesrv = %args.namesrv, "broker configured (static route in R1)");
     run(config).await?;

@@ -30,10 +30,13 @@ pub struct NameServerConfig {
     pub fence_token: Option<String>,
     pub admin_token: Option<String>,
     pub route_file: Option<std::path::PathBuf>,
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
 }
 
 pub async fn run(config: NameServerConfig) -> std::io::Result<()> {
     let listener = TcpListener::bind(config.listen).await?;
+    let tls_acceptor = build_tls_acceptor(&config)?;
     let state = Arc::new(config);
     if let Some(addr) = state.admin_listen {
         let admin_state = Arc::clone(&state);
@@ -45,12 +48,47 @@ pub async fn run(config: NameServerConfig) -> std::io::Result<()> {
     loop {
         let (stream, peer) = listener.accept().await?;
         let state = Arc::clone(&state);
+        let tls = tls_acceptor.clone();
         tokio::spawn(async move {
-            if let Err(err) = handle_connection(stream, state).await {
+            let result = if let Some(acceptor) = tls {
+                match acceptor.accept(stream).await {
+                    Ok(stream) => handle_connection(stream, state).await,
+                    Err(err) => {
+                        tracing::warn!(%peer, error = %err, "namesrv tls handshake failed");
+                        return;
+                    }
+                }
+            } else {
+                handle_connection(stream, state).await
+            };
+            if let Err(err) = result {
                 tracing::warn!(%peer, error = %err, "namesrv connection closed");
             }
         });
     }
+}
+
+fn build_tls_acceptor(
+    config: &NameServerConfig,
+) -> std::io::Result<Option<tokio_rustls::TlsAcceptor>> {
+    let (Some(cert), Some(key)) = (&config.tls_cert, &config.tls_key) else {
+        return Ok(None);
+    };
+    let mut cert_reader = std::io::BufReader::new(std::fs::File::open(cert)?);
+    let certs = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let mut key_reader = std::io::BufReader::new(std::fs::File::open(key)?);
+    let key = rustls_pemfile::private_key(&mut key_reader)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "missing private key")
+        })?;
+    let server = tokio_rustls::rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    Ok(Some(tokio_rustls::TlsAcceptor::from(Arc::new(server))))
 }
 
 async fn notify_fence(target: &str, route: &str, epoch: u64, token: Option<&str>) {
@@ -147,10 +185,10 @@ async fn run_admin(state: Arc<NameServerConfig>, addr: SocketAddr) -> std::io::R
     }
 }
 
-async fn handle_connection(
-    mut stream: TcpStream,
-    state: Arc<NameServerConfig>,
-) -> std::io::Result<()> {
+async fn handle_connection<S>(mut stream: S, state: Arc<NameServerConfig>) -> std::io::Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let mut buf = BytesMut::with_capacity(8192);
     loop {
         let n = stream.read_buf(&mut buf).await?;
@@ -267,6 +305,8 @@ mod tests {
             fence_token: None,
             admin_token: None,
             route_file: None,
+            tls_cert: None,
+            tls_key: None,
         }
     }
 

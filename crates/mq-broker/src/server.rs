@@ -18,7 +18,7 @@ use mq_protocol::{decode_frame, RemotingCommand};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::time::{timeout, Duration};
 
 use crate::audit::AuditLog;
@@ -45,6 +45,8 @@ pub struct BrokerConfig {
     pub acl_secrets: Arc<std::collections::HashMap<String, String>>,
     pub acl_policy: Option<Arc<std::sync::RwLock<crate::acl::AclPolicy>>>,
     pub trace: Arc<crate::trace::TraceLog>,
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
 }
 
 /// Apply TC decisions to locally pending half messages.
@@ -86,6 +88,7 @@ pub async fn reconcile_once(
 
 pub async fn run(config: BrokerConfig) -> std::io::Result<()> {
     let listener = TcpListener::bind(config.listen).await?;
+    let tls_acceptor = build_tls_acceptor(&config)?;
     let config = Arc::new(config);
     if let (Some(tc), true) = (config.tc_client.clone(), config.tc_reconcile_ms > 0) {
         let store = Arc::clone(&config.store);
@@ -105,20 +108,56 @@ pub async fn run(config: BrokerConfig) -> std::io::Result<()> {
     loop {
         let (stream, peer) = listener.accept().await?;
         let config = Arc::clone(&config);
+        let tls = tls_acceptor.clone();
         tokio::spawn(async move {
-            if let Err(err) = handle_connection(stream, config, peer).await {
+            let result = if let Some(acceptor) = tls {
+                match acceptor.accept(stream).await {
+                    Ok(stream) => handle_connection(stream, config, peer).await,
+                    Err(err) => {
+                        tracing::warn!(%peer, error = %err, "tls handshake failed");
+                        return;
+                    }
+                }
+            } else {
+                handle_connection(stream, config, peer).await
+            };
+            if let Err(err) = result {
                 tracing::warn!(%peer, error = %err, "broker connection closed");
             }
         });
     }
 }
 
-async fn handle_connection(
-    stream: TcpStream,
+fn build_tls_acceptor(config: &BrokerConfig) -> std::io::Result<Option<tokio_rustls::TlsAcceptor>> {
+    let (Some(cert), Some(key)) = (&config.tls_cert, &config.tls_key) else {
+        return Ok(None);
+    };
+    let mut cert_reader = std::io::BufReader::new(std::fs::File::open(cert)?);
+    let certs = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let mut key_reader = std::io::BufReader::new(std::fs::File::open(key)?);
+    let key = rustls_pemfile::private_key(&mut key_reader)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "missing private key")
+        })?;
+    let server = tokio_rustls::rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    Ok(Some(tokio_rustls::TlsAcceptor::from(Arc::new(server))))
+}
+
+async fn handle_connection<S>(
+    stream: S,
     config: Arc<BrokerConfig>,
     peer: SocketAddr,
-) -> std::io::Result<()> {
-    let (mut read_half, mut write_half) = stream.into_split();
+) -> std::io::Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let (mut read_half, mut write_half) = tokio::io::split(stream);
     let (tx, mut rx) = mpsc::unbounded_channel::<RemotingCommand>();
     let writer = tokio::spawn(async move {
         while let Some(cmd) = rx.recv().await {

@@ -29,6 +29,10 @@ struct Args {
     admin_token: Option<String>,
     #[arg(long)]
     route_file: Option<String>,
+    #[arg(long)]
+    tls_cert: Option<String>,
+    #[arg(long)]
+    tls_key: Option<String>,
 }
 
 #[tokio::main]
@@ -72,6 +76,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         fence_token: args.fence_token,
         admin_token: args.admin_token,
         route_file: args.route_file.map(Into::into),
+        tls_cert: args.tls_cert,
+        tls_key: args.tls_key,
     };
     run(config).await?;
     Ok(())
