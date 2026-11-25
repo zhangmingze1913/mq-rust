@@ -49,6 +49,16 @@ spec:
             - "8"
           ports:
             - containerPort: 9877
+          readinessProbe:
+            tcpSocket:
+              port: 9877
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 9877
+            initialDelaySeconds: 10
+            periodSeconds: 10
           resources:
             requests:
               cpu: 50m
@@ -128,6 +138,12 @@ spec:
               path: /health
               port: 9091
             initialDelaySeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9091
+            initialDelaySeconds: 10
+            periodSeconds: 10
           volumeMounts:
             - name: data
               mountPath: /data
@@ -179,6 +195,7 @@ spec:
       labels:
         app: mq-rust-tc
     spec:
+      terminationGracePeriodSeconds: 20
       containers:
         - name: tc
           image: mq-rust:latest
@@ -196,6 +213,16 @@ spec:
           ports:
             - containerPort: 19301
             - containerPort: 9191
+          readinessProbe:
+            tcpSocket:
+              port: 9191
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 19301
+            initialDelaySeconds: 10
+            periodSeconds: 10
           volumeMounts:
             - name: data
               mountPath: /data
