@@ -247,6 +247,24 @@ async fn handle_command(
                         .with_remark(format!("ACL permission denied for topic {topic}")),
                 ));
             }
+            if action == "READ" {
+                let group = ext
+                    .and_then(|fields| fields.get("consumerGroup").or_else(|| fields.get("group")))
+                    .map(String::as_str)
+                    .unwrap_or("");
+                if !policy.allows_group(
+                    access_key.map(String::as_str).unwrap_or_default(),
+                    topic,
+                    group,
+                    action,
+                    &peer_ip,
+                ) {
+                    return Ok(Some(
+                        RemotingCommand::response(response_code::NO_PERMISSION, opaque)
+                            .with_remark(format!("ACL permission denied for group {group}")),
+                    ));
+                }
+            }
         }
     } else if !config.acl_secrets.is_empty() {
         let access_key = ext.and_then(|fields| fields.get("AccessKey"));

@@ -34,6 +34,8 @@ pub struct AclAccount {
 pub struct AclPermission {
     #[serde(default = "star")]
     pub topic: String,
+    #[serde(default = "star")]
+    pub group: String,
     #[serde(default = "deny")]
     pub perm: String,
 }
@@ -97,6 +99,44 @@ impl AclPolicy {
         }
         allowed
     }
+
+    /// Group-scoped check (RocketMQ ACL group permissions).
+    pub fn allows_group(
+        &self,
+        access_key: &str,
+        topic: &str,
+        group: &str,
+        action: &str,
+        peer: &str,
+    ) -> bool {
+        let Some(account) = self.accounts.get(access_key) else {
+            return false;
+        };
+        if let Some(white) = &account.white_remote_address {
+            if !ip_matches(white, peer) {
+                return false;
+            }
+        }
+        let mut allowed = false;
+        for permission in &account.permissions {
+            if !topic_matches(&permission.topic, topic) || !group_matches(&permission.group, group)
+            {
+                continue;
+            }
+            let perm = permission.perm.to_ascii_uppercase();
+            if perm == "DENY" {
+                return false;
+            }
+            if perm == "ANY" || perm == "ALL" || perm == action {
+                allowed = true;
+            }
+        }
+        allowed
+    }
+}
+
+fn group_matches(pattern: &str, group: &str) -> bool {
+    topic_matches(pattern, group)
 }
 
 fn topic_matches(pattern: &str, topic: &str) -> bool {
@@ -161,10 +201,12 @@ mod tests {
                 permissions: vec![
                     AclPermission {
                         topic: "MQ_*".into(),
+                        group: "G_*".into(),
                         perm: "WRITE".into(),
                     },
                     AclPermission {
                         topic: "MQ_DENY".into(),
+                        group: "*".into(),
                         perm: "DENY".into(),
                     },
                 ],
@@ -183,6 +225,9 @@ mod tests {
         assert!(!p.allows("key", "MQ_DENY", "WRITE", "127.0.0.1"));
         assert!(!p.allows("unknown", "MQ_ALLOW", "WRITE", "127.0.0.1"));
         assert!(!p.allows("key", "MQ_ALLOW", "WRITE", "10.0.0.1"));
+        assert!(p.allows_group("key", "MQ_ALLOW", "G_READ", "WRITE", "127.0.0.1"));
+        assert!(!p.allows_group("key", "MQ_ALLOW", "OTHER", "WRITE", "127.0.0.1"));
+        assert!(!p.allows_group("key", "MQ_ALLOW", "G_READ", "READ", "127.0.0.1"));
     }
 
     #[test]
