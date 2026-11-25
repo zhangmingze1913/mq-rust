@@ -113,7 +113,7 @@ async fn handle(
             .any(|line| line.eq_ignore_ascii_case(&expected))
     });
 
-    let (status, body) = if path != "/fence" && !admin_authorized {
+    let (status, body) = if path != "/fence" && path != "/health" && !admin_authorized {
         (
             "401 Unauthorized",
             "{\"error\":\"invalid admin token\"}".to_string(),
