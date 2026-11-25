@@ -1,0 +1,6 @@
+FROM eclipse-temurin:17-jre
+
+WORKDIR /app
+COPY .k8s-out /app/out
+COPY .k8s-libs /app/lib
+ENTRYPOINT ["java", "-cp", "/app/out:/app/lib/*", "MqRustCompatSmoke"]
