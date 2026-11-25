@@ -86,6 +86,17 @@ spec:
       port: 9091
       targetPort: 9091
 ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mq-rust-broker-data
+  namespace: mq-rust
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -93,6 +104,8 @@ metadata:
   namespace: mq-rust
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: mq-rust-broker
@@ -156,7 +169,8 @@ spec:
               memory: 1Gi
       volumes:
         - name: data
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: mq-rust-broker-data
 ---
 apiVersion: v1
 kind: Service
