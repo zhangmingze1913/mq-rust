@@ -89,6 +89,8 @@ struct Args {
     trace_max_bytes: u64,
     #[arg(long, default_value_t = 1)]
     trace_sample_rate: u32,
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    trace_enabled: bool,
     #[arg(long)]
     sync_replicate: bool,
     #[arg(long, default_value_t = 1000)]
@@ -126,14 +128,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
         args.commitlog_segment_bytes,
     )?);
     let audit = Arc::new(AuditLog::open(&args.audit_path)?);
-    let trace = Arc::new(match &args.trace_path {
-        Some(path) => mq_broker::trace::TraceLog::open_with_sample(
-            args.trace_capacity,
-            path,
-            args.trace_max_bytes,
-            args.trace_sample_rate,
-        )?,
-        None => mq_broker::trace::TraceLog::new(args.trace_capacity),
+    let trace = Arc::new(if !args.trace_enabled {
+        mq_broker::trace::TraceLog::disabled()
+    } else {
+        match &args.trace_path {
+            Some(path) => mq_broker::trace::TraceLog::open_with_sample(
+                args.trace_capacity,
+                path,
+                args.trace_max_bytes,
+                args.trace_sample_rate,
+            )?,
+            None => mq_broker::trace::TraceLog::new(args.trace_capacity),
+        }
     });
     let read_only = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let acl_secrets = Arc::new(

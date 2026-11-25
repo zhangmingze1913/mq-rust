@@ -107,6 +107,7 @@ pub struct TraceLog {
     writer: Option<WriterHandle>,
     sample: u32,
     seq: AtomicU64,
+    enabled: bool,
 }
 
 impl TraceLog {
@@ -117,6 +118,19 @@ impl TraceLog {
             writer: None,
             sample: 1,
             seq: AtomicU64::new(0),
+            enabled: true,
+        }
+    }
+
+    /// A trace log that records nothing; used for throughput benchmarks.
+    pub fn disabled() -> Self {
+        Self {
+            capacity: 1,
+            events: Mutex::new(VecDeque::with_capacity(1)),
+            writer: None,
+            sample: 1,
+            seq: AtomicU64::new(0),
+            enabled: false,
         }
     }
 
@@ -166,6 +180,7 @@ impl TraceLog {
             writer: Some(WriterHandle::spawn(path, max_bytes.max(1))),
             sample: sample.max(1),
             seq: AtomicU64::new(0),
+            enabled: true,
         })
     }
 
@@ -178,6 +193,9 @@ impl TraceLog {
         msg_id: &str,
         group: Option<&str>,
     ) {
+        if !self.enabled {
+            return;
+        }
         if self.writer.is_some() && self.sample > 1 {
             let seq = self.seq.fetch_add(1, Ordering::Relaxed);
             let sampled = seq
