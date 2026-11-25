@@ -59,13 +59,32 @@ impl Admin for AdminSvc {
     }
 }
 
+pub struct GrpcTls {
+    pub cert: String,
+    pub key: String,
+    pub client_ca: Option<String>,
+}
+
 pub async fn serve(
     addr: SocketAddr,
     store: Arc<BrokerStore>,
     metrics: Arc<Metrics>,
+    tls: Option<GrpcTls>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
     let svc = AdminSvc { store, metrics };
-    tonic::transport::Server::builder()
+    let mut builder = tonic::transport::Server::builder();
+    if let Some(tls) = tls {
+        let identity =
+            tonic::transport::Identity::from_pem(std::fs::read(tls.cert)?, std::fs::read(tls.key)?);
+        let mut config = tonic::transport::ServerTlsConfig::new().identity(identity);
+        if let Some(ca) = tls.client_ca {
+            config =
+                config.client_ca_root(tonic::transport::Certificate::from_pem(std::fs::read(ca)?));
+        }
+        builder = builder.tls_config(config)?;
+    }
+    builder
         .add_service(AdminServer::new(svc))
         .serve(addr)
         .await?;

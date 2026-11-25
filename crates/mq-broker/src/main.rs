@@ -39,6 +39,12 @@ struct Args {
     admin_listen: String,
     #[arg(long)]
     grpc_listen: Option<std::net::SocketAddr>,
+    #[arg(long)]
+    grpc_tls_cert: Option<String>,
+    #[arg(long)]
+    grpc_tls_key: Option<String>,
+    #[arg(long)]
+    grpc_tls_client_ca: Option<String>,
     #[arg(long, default_value = "./data/audit.log")]
     audit_path: String,
     #[arg(long, default_value = "./data/inbox.log")]
@@ -478,8 +484,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let Some(addr) = args.grpc_listen {
         let store = std::sync::Arc::clone(&config.store);
         let metrics = std::sync::Arc::clone(&config.metrics);
+        let tls = match (&args.grpc_tls_cert, &args.grpc_tls_key) {
+            (Some(cert), Some(key)) => Some(mq_broker::grpc::GrpcTls {
+                cert: cert.clone(),
+                key: key.clone(),
+                client_ca: args.grpc_tls_client_ca.clone(),
+            }),
+            _ => None,
+        };
         tokio::spawn(async move {
-            if let Err(err) = mq_broker::grpc::serve(addr, store, metrics).await {
+            if let Err(err) = mq_broker::grpc::serve(addr, store, metrics, tls).await {
                 tracing::warn!(%addr, error = %err, "grpc admin server stopped");
             }
         });
