@@ -1,6 +1,6 @@
 # Raft 消息日志复制设计（1.0 剩余硬项）
 
-> 状态：3 broker Raft SEND/BATCH、自动路由、追平、持久化、重启、分区、延时、事务（Raft-first）、快照/压缩已通过（R175–R194）；非 Raft 1.25M 长跑 0 失败（R195）；Raft 1M 长跑未做。
+> 状态：3 broker Raft SEND/BATCH、自动路由、追平、持久化、重启、分区、延时、事务（Raft-first）、快照/压缩、half 阶段 leader 崩溃已通过（R175–R196）；commit 阶段崩溃幂等未验。
 
 ---
 

@@ -3,7 +3,7 @@
 > Rust 实现的分布式事务消息中间件，兼容 Apache RocketMQ 4.9.x Remoting 协议与 Java SDK。
 > 面向电商/金融等对“低延迟、高可靠、可审计、最终一致”有要求的场景。
 
-- **当前阶段**：R1–R195 完成；RC 已验收；非 Raft 1.25M 长跑 0 失败
+- **当前阶段**：R1–R196 完成；RC 已验收；half 阶段 leader 崩溃恢复
 - **测试**：85 项 Rust 测试通过；RocketMQ 4.9.8 Java SDK 全量回归通过
 - **性能**：单条 100k 长跑 **9,347 TPS**；1M 长跑 **8,438 TPS/0 失败**；批量 64 条 **24,982 msg/s**；消费 20 线程 **11,130 TPS**
 - **目标**：兼容 RocketMQ 协议/SDK 的单机事务消息中间件 + TC Raft 集群
@@ -264,6 +264,7 @@ Producer/Consumer (RocketMQ Java SDK)
 | [R193-Raft 压缩](docs/rounds/R193-raft-compaction.md) | 日志压缩 |
 | [R194-事务 Raft-first](docs/rounds/R194-raft-tx-ordering.md) | 提交顺序 |
 | [R195-1M 长跑](docs/rounds/R195-load-1m.md) | 1.25M/0 失败 |
+| [R196-事务 leader 崩溃](docs/rounds/R196-raft-tx-leader-crash.md) | half 回滚/续写 |
 | [图表索引](docs/图表索引.md) | PNG/PlantUML |
 
 分阶段报告：`docs/rounds/R01.md` … `R193-raft-compaction.md`（R174/R185/R189 为负结果）；1.0 剩余计划见 [22-1.0剩余工作计划](docs/22-1.0剩余工作计划.md)，接手见 [23-交付交接](docs/23-交付交接.md)；最终验收见 [16-最终验收报告](docs/16-最终验收报告.md)，交付说明见 [21-最终交付说明](docs/21-最终交付说明.md)，交付索引见 [20-交付索引](docs/20-交付索引.md)。
