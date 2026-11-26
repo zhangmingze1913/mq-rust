@@ -121,6 +121,34 @@ impl DiskLogStore {
             let _ = file.flush();
         }
     }
+
+    /// Rewrite the JSONL file from the in-memory state (compaction).
+    fn rewrite(&self) {
+        let state = self.state.lock().unwrap();
+        let tmp = self.path.with_extension("compact");
+        let Ok(mut file) = std::fs::File::create(&tmp) else {
+            return;
+        };
+        let mut write = |record: &DiskRecord| {
+            if serde_json::to_writer(&mut file, record).is_ok() {
+                let _ = file.write_all(b"\n");
+            }
+        };
+        if let Some(vote) = state.vote {
+            write(&DiskRecord::Vote { vote });
+        }
+        for entry in &state.entries {
+            write(&DiskRecord::Append {
+                entry: entry.clone(),
+            });
+        }
+        if let Some(id) = state.purged {
+            write(&DiskRecord::Purge { id });
+        }
+        let _ = file.flush();
+        drop(file);
+        let _ = std::fs::rename(&tmp, &*self.path);
+    }
 }
 
 impl RaftLogReader<TypeConfig> for DiskLogStore {
@@ -201,7 +229,7 @@ impl RaftLogStorage<TypeConfig> for DiskLogStore {
             let keep = last_log_id.map(|id| id.index()).unwrap_or(0);
             state.entries.retain(|e| e.index() <= keep);
         }
-        self.write_record(&DiskRecord::Truncate { last: last_log_id });
+        self.rewrite();
         RaftLogStorage::truncate_after(&mut Arc::clone(&self.inner), last_log_id).await
     }
 
@@ -211,7 +239,7 @@ impl RaftLogStorage<TypeConfig> for DiskLogStore {
             state.purged = Some(log_id);
             state.entries.retain(|e| e.index() > log_id.index());
         }
-        self.write_record(&DiskRecord::Purge { id: log_id });
+        self.rewrite();
         RaftLogStorage::purge(&mut Arc::clone(&self.inner), log_id).await
     }
 }

@@ -527,6 +527,9 @@ impl MessageRaft {
                 heartbeat_interval: 200,
                 election_timeout_min: 600,
                 election_timeout_max: 1200,
+                snapshot_policy: openraft::SnapshotPolicy::LogsSinceLast(2000),
+                max_in_snapshot_log_to_keep: 100,
+                purge_batch_size: 16,
                 ..Default::default()
             }
             .validate()?,
