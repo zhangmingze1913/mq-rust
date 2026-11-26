@@ -41,6 +41,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 
+pub mod disk;
+pub use disk::DiskLogStore;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MessageCommand {
     pub topic: String,
@@ -356,7 +359,7 @@ impl MessageRaft {
         peers: Vec<(u64, String)>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (sm, messages) = MessageSM::new();
-        Self::start_with_sm(node_id, listen, peers, sm, messages, true).await
+        Self::start_with_sm(node_id, listen, peers, sm, messages, true, None).await
     }
 
     pub async fn start_with_applier(
@@ -367,7 +370,28 @@ impl MessageRaft {
         initialize: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (sm, messages) = MessageSM::new_with_applier(applier);
-        Self::start_with_sm(node_id, listen, peers, sm, messages, initialize).await
+        Self::start_with_sm(node_id, listen, peers, sm, messages, initialize, None).await
+    }
+
+    pub async fn start_persistent(
+        node_id: u64,
+        listen: &str,
+        peers: Vec<(u64, String)>,
+        applier: Applier,
+        initialize: bool,
+        log_path: impl AsRef<std::path::Path>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let (sm, messages) = MessageSM::new_with_applier(applier);
+        Self::start_with_sm(
+            node_id,
+            listen,
+            peers,
+            sm,
+            messages,
+            initialize,
+            Some(log_path.as_ref().to_path_buf()),
+        )
+        .await
     }
 
     async fn start_with_sm(
@@ -377,6 +401,7 @@ impl MessageRaft {
         sm: MessageSM,
         messages: Messages,
         initialize: bool,
+        log_path: Option<std::path::PathBuf>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let listener = TcpListener::bind(listen).await?;
         let peer_map: HashMap<u64, String> = peers.iter().cloned().collect();
@@ -390,17 +415,31 @@ impl MessageRaft {
             }
             .validate()?,
         );
-        let log_store = Arc::new(MemLogStore::new(Default::default()));
-        let raft = Arc::new(
-            openraft::Raft::new(
-                node_id,
-                config,
-                NetworkFactory { peers: peer_map },
-                log_store,
-                sm,
+        let raft = if let Some(path) = log_path {
+            let log_store = DiskLogStore::open(path).await?;
+            Arc::new(
+                openraft::Raft::new(
+                    node_id,
+                    config,
+                    NetworkFactory { peers: peer_map },
+                    log_store,
+                    sm,
+                )
+                .await?,
             )
-            .await?,
-        );
+        } else {
+            let log_store = Arc::new(MemLogStore::new(Default::default()));
+            Arc::new(
+                openraft::Raft::new(
+                    node_id,
+                    config,
+                    NetworkFactory { peers: peer_map },
+                    log_store,
+                    sm,
+                )
+                .await?,
+            )
+        };
         tokio::spawn(serve(listener, Arc::clone(&raft)));
         let mut members = std::collections::BTreeMap::new();
         for (id, _) in &peers {

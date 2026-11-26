@@ -496,12 +496,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     tracing::warn!(%err, "raft apply failed");
                 }
             });
-            let raft = mq_raft::MessageRaft::start_with_applier(
+            let raft_log = std::path::Path::new(&args.store_root).join("raft.log");
+            let raft = mq_raft::MessageRaft::start_persistent(
                 args.raft_id,
                 listen_addr,
                 peers,
                 applier,
                 initialize,
+                raft_log,
             )
             .await?;
             if initialize {
