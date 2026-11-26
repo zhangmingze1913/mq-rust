@@ -856,6 +856,7 @@ dependencies = [
  "mq-common",
  "mq-observability",
  "mq-protocol",
+ "mq-raft",
  "mq-store",
  "prost",
  "rustls-pemfile",

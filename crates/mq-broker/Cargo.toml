@@ -19,6 +19,7 @@ tokio-rustls.workspace = true
 rustls-pemfile.workspace = true
 tonic.workspace = true
 prost.workspace = true
+mq-raft = { path = "../mq-raft" }
 
 [[bin]]
 name = "mq-broker"

@@ -49,6 +49,7 @@ pub struct BrokerConfig {
     pub tls_cert: Option<String>,
     pub tls_key: Option<String>,
     pub tls_client_ca: Option<String>,
+    pub raft: Option<Arc<mq_raft::MessageRaft>>,
 }
 
 /// Apply TC decisions to locally pending half messages.
@@ -519,7 +520,26 @@ async fn handle_command(
                     .apply(&mut resp);
                     return Ok(Some(resp));
                 }
-                config.store.append(msg)?
+                if let Some(raft) = &config.raft {
+                    if !raft.is_leader() {
+                        return Err(MqError::Store("not raft leader".into()));
+                    }
+                    let command = mq_raft::MessageCommand {
+                        topic: msg.topic.clone(),
+                        queue_id: msg.queue_id,
+                        msg_id: msg.msg_id.clone(),
+                        body: msg.body.to_vec(),
+                        properties: msg.properties.clone(),
+                    };
+                    raft.write(command).await.map_err(MqError::Store)?;
+                    tracing::debug!(msg_id = %msg.msg_id, "raft write committed");
+                    config
+                        .store
+                        .message_by_id(&msg.msg_id)
+                        .ok_or_else(|| MqError::Store("raft applied message not found".into()))?
+                } else {
+                    config.store.append(msg)?
+                }
             };
             config
                 .metrics

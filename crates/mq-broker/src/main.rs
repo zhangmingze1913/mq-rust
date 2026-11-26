@@ -127,6 +127,12 @@ struct Args {
     advertise: Option<String>,
     #[arg(long)]
     namesrv_admin: Option<String>,
+    #[arg(long)]
+    raft_listen: Option<String>,
+    #[arg(long, default_value_t = 1)]
+    raft_id: u64,
+    #[arg(long)]
+    raft_peers: Option<String>,
     #[arg(long, default_value_t = 2000)]
     tc_reconcile_ms: u64,
     #[arg(long, default_value = "./data/tc-outbox.log")]
@@ -471,6 +477,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
+    let raft = match (&args.raft_listen, &args.raft_peers) {
+        (Some(listen_addr), Some(peer_spec)) => {
+            let peers = peer_spec
+                .split(',')
+                .filter_map(|item| {
+                    let (id, addr) = item.trim().split_once('@')?;
+                    Some((id.parse::<u64>().ok()?, addr.to_string()))
+                })
+                .collect::<Vec<_>>();
+            let target = std::sync::Arc::clone(&store);
+            let store_port = listen.port();
+            let applier: mq_raft::Applier = std::sync::Arc::new(move |cmd| {
+                tracing::debug!(msg_id = %cmd.msg_id, "raft apply start");
+                if let Err(err) = target.append(stored_from_command(cmd, store_port)) {
+                    tracing::warn!(%err, "raft apply failed");
+                }
+            });
+            let raft =
+                mq_raft::MessageRaft::start_with_applier(args.raft_id, listen_addr, peers, applier)
+                    .await?;
+            Some(std::sync::Arc::new(raft))
+        }
+        _ => None,
+    };
     let config = BrokerConfig {
         listen,
         store,
@@ -489,6 +519,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         tls_cert: args.tls_cert.clone(),
         tls_key: args.tls_key.clone(),
         tls_client_ca: args.tls_client_ca.clone(),
+        raft,
     };
     tracing::info!(namesrv = %args.namesrv, "broker configured (static route in R1)");
     if args.leader_lease {
@@ -535,6 +566,31 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     run(config).await?;
     Ok(())
+}
+
+fn stored_from_command(
+    cmd: mq_raft::MessageCommand,
+    store_port: u16,
+) -> mq_protocol::message::StoredMessage {
+    mq_protocol::message::StoredMessage {
+        msg_id: cmd.msg_id,
+        topic: cmd.topic,
+        queue_id: cmd.queue_id,
+        queue_offset: 0,
+        physical_offset: 0,
+        sys_flag: 0,
+        flag: 0,
+        born_timestamp: mq_common::now_ms(),
+        born_host: [127, 0, 0, 1],
+        born_port: 0,
+        store_timestamp: mq_common::now_ms(),
+        store_host: [127, 0, 0, 1],
+        store_port,
+        reconsume_times: 0,
+        prepared_transaction_offset: 0,
+        body: cmd.body.into(),
+        properties: cmd.properties,
+    }
 }
 
 fn namesrv_route(admin: &str, token: Option<&str>) -> Option<(String, u64)> {

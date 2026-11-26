@@ -888,6 +888,19 @@ impl BrokerStore {
         Ok(msg)
     }
 
+    pub fn message_by_id(&self, msg_id: &str) -> Option<StoredMessage> {
+        let (topic, queue_id, queue_offset) =
+            self.msg_index.read().unwrap().get(msg_id).cloned()?;
+        let topic = self.topics.read().unwrap().get(&topic).cloned()?;
+        let topic = topic.read().unwrap();
+        let queue = topic.queues.get(queue_id as usize)?;
+        let queue = queue.read().unwrap();
+        queue
+            .messages
+            .get((queue_offset - queue.base_offset) as usize)
+            .cloned()
+    }
+
     fn cq_path(&self, topic: &str, queue_id: i32) -> Option<PathBuf> {
         let root = self.cq_root.as_ref()?;
         let topic_dir = topic.replace(['/', '\\', ':'], "_");

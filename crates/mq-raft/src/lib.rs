@@ -47,18 +47,33 @@ pub struct MessageCommand {
     pub queue_id: i32,
     pub msg_id: String,
     pub body: Vec<u8>,
+    pub properties: String,
 }
 
 pub type Messages = Arc<RwLock<Vec<MessageCommand>>>;
 pub type Raft = Arc<openraft::Raft<TypeConfig, MessageSM>>;
+pub type Applier = Arc<dyn Fn(MessageCommand) + Send + Sync>;
 type CurrentSnapshot = Arc<RwLock<Option<SnapshotOf<TypeConfig, Cursor<Vec<u8>>>>>>;
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct MessageSM {
     messages: Messages,
+    applier: Option<Applier>,
     applied: Arc<RwLock<Option<LogIdOf<TypeConfig>>>>,
     membership: Arc<RwLock<StoredMembershipOf<TypeConfig>>>,
     current: CurrentSnapshot,
+}
+
+impl Default for MessageSM {
+    fn default() -> Self {
+        Self {
+            messages: Arc::new(RwLock::new(Vec::new())),
+            applier: None,
+            applied: Arc::new(RwLock::new(None)),
+            membership: Arc::new(RwLock::new(StoredMembershipOf::<TypeConfig>::default())),
+            current: Arc::new(RwLock::new(None)),
+        }
+    }
 }
 
 impl MessageSM {
@@ -67,6 +82,18 @@ impl MessageSM {
         (
             Self {
                 messages: Arc::clone(&messages),
+                ..Default::default()
+            },
+            messages,
+        )
+    }
+
+    pub fn new_with_applier(applier: Applier) -> (Self, Messages) {
+        let messages = Arc::new(RwLock::new(Vec::new()));
+        (
+            Self {
+                messages: Arc::clone(&messages),
+                applier: Some(applier),
                 ..Default::default()
             },
             messages,
@@ -99,6 +126,9 @@ impl RaftStateMachine<TypeConfig> for MessageSM {
                 EntryPayload::Blank => ClientResponse(None),
                 EntryPayload::Normal(ref data) => {
                     if let Ok(cmd) = serde_json::from_str::<MessageCommand>(&data.status) {
+                        if let Some(applier) = &self.applier {
+                            applier(cmd.clone());
+                        }
                         self.messages.write().await.push(cmd);
                     }
                     ClientResponse(None)
@@ -325,6 +355,27 @@ impl MessageRaft {
         listen: &str,
         peers: Vec<(u64, String)>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        let (sm, messages) = MessageSM::new();
+        Self::start_with_sm(node_id, listen, peers, sm, messages).await
+    }
+
+    pub async fn start_with_applier(
+        node_id: u64,
+        listen: &str,
+        peers: Vec<(u64, String)>,
+        applier: Applier,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let (sm, messages) = MessageSM::new_with_applier(applier);
+        Self::start_with_sm(node_id, listen, peers, sm, messages).await
+    }
+
+    async fn start_with_sm(
+        node_id: u64,
+        listen: &str,
+        peers: Vec<(u64, String)>,
+        sm: MessageSM,
+        messages: Messages,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let listener = TcpListener::bind(listen).await?;
         let peer_map: HashMap<u64, String> = peers.iter().cloned().collect();
         let config = Arc::new(
@@ -338,7 +389,6 @@ impl MessageRaft {
             .validate()?,
         );
         let log_store = Arc::new(MemLogStore::new(Default::default()));
-        let (sm, messages) = MessageSM::new();
         let raft = Arc::new(
             openraft::Raft::new(
                 node_id,
@@ -360,6 +410,10 @@ impl MessageRaft {
             raft,
             messages,
         })
+    }
+
+    pub fn is_leader(&self) -> bool {
+        self.raft.is_leader()
     }
 
     pub async fn wait_leader(&self, timeout: Duration) -> Option<u64> {
@@ -438,6 +492,7 @@ mod tests {
             queue_id: 0,
             msg_id: "m1".into(),
             body: b"hello".to_vec(),
+            properties: String::new(),
         };
         nodes[(leader - 1) as usize]
             .write(cmd.clone())
