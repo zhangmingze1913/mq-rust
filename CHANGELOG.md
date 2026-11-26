@@ -31,7 +31,7 @@
 
 ### 质量
 
-- Rust 84 项测试；Clippy `-D warnings`；Java 23 个测试源。
+- Rust 85 项测试；Clippy `-D warnings`；Java 23 个测试源。
 - 12 类 SDK/管理矩阵通过。
 - 1M 单条最佳 8,438 TPS（原生 RocketMQ 15,465）。
 - 批量 64 条 24,982 msg/s；消费 11,130 TPS。

@@ -35,6 +35,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::io;
 use std::io::Cursor;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -87,6 +88,14 @@ pub struct MessageSM {
     applied: Arc<RwLock<Option<LogIdOf<TypeConfig>>>>,
     membership: Arc<RwLock<StoredMembershipOf<TypeConfig>>>,
     current: CurrentSnapshot,
+    snapshot_path: Option<Arc<PathBuf>>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SnapshotFile {
+    messages: Vec<MessageCommand>,
+    applied: Option<LogIdOf<TypeConfig>>,
+    membership: StoredMembershipOf<TypeConfig>,
 }
 
 impl Default for MessageSM {
@@ -97,6 +106,7 @@ impl Default for MessageSM {
             applied: Arc::new(RwLock::new(None)),
             membership: Arc::new(RwLock::new(StoredMembershipOf::<TypeConfig>::default())),
             current: Arc::new(RwLock::new(None)),
+            snapshot_path: None,
         }
     }
 }
@@ -123,6 +133,62 @@ impl MessageSM {
             },
             messages,
         )
+    }
+
+    pub fn new_with_applier_and_snapshot(
+        applier: Applier,
+        snapshot_path: impl Into<PathBuf>,
+    ) -> (Self, Messages) {
+        let path = snapshot_path.into();
+        let loaded = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<SnapshotFile>(&bytes).ok());
+        let (messages, applied, membership) = match loaded {
+            Some(snapshot) => (
+                Arc::new(RwLock::new(snapshot.messages)),
+                Arc::new(RwLock::new(snapshot.applied)),
+                Arc::new(RwLock::new(snapshot.membership)),
+            ),
+            None => (
+                Arc::new(RwLock::new(Vec::new())),
+                Arc::new(RwLock::new(None)),
+                Arc::new(RwLock::new(StoredMembershipOf::<TypeConfig>::default())),
+            ),
+        };
+        (
+            Self {
+                messages: Arc::clone(&messages),
+                applier: Some(applier),
+                applied,
+                membership,
+                current: Arc::new(RwLock::new(None)),
+                snapshot_path: Some(Arc::new(path)),
+            },
+            messages,
+        )
+    }
+
+    fn persist_snapshot(
+        &self,
+        messages: &[MessageCommand],
+        applied: Option<LogIdOf<TypeConfig>>,
+        membership: &StoredMembershipOf<TypeConfig>,
+    ) {
+        let Some(path) = &self.snapshot_path else {
+            return;
+        };
+        let file = SnapshotFile {
+            messages: messages.to_vec(),
+            applied,
+            membership: membership.clone(),
+        };
+        let Ok(bytes) = serde_json::to_vec(&file) else {
+            return;
+        };
+        let tmp = path.with_extension("tmp");
+        if std::fs::write(&tmp, bytes).is_ok() {
+            let _ = std::fs::rename(&tmp, &**path);
+        }
     }
 }
 
@@ -184,9 +250,10 @@ impl RaftStateMachine<TypeConfig> for MessageSM {
     ) -> Result<(), io::Error> {
         let restored: Vec<MessageCommand> = serde_json::from_slice(&snapshot.into_inner())
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        *self.messages.write().await = restored;
+        *self.messages.write().await = restored.clone();
         *self.applied.write().await = meta.last_log_id;
         *self.membership.write().await = meta.last_membership.clone();
+        self.persist_snapshot(&restored, meta.last_log_id, &meta.last_membership);
         Ok(())
     }
 
@@ -215,6 +282,9 @@ impl RaftSnapshotBuilder<TypeConfig> for MessageSM {
             snapshot: Cursor::new(body),
         };
         *self.current.write().await = Some(snapshot.clone());
+        let applied = *self.applied.read().await;
+        let membership = self.membership.read().await.clone();
+        self.persist_snapshot(&messages, applied, &membership);
         Ok(snapshot)
     }
 }
@@ -418,6 +488,28 @@ impl MessageRaft {
         .await
     }
 
+    pub async fn start_with_applier_snapshot(
+        node_id: u64,
+        listen: &str,
+        peers: Vec<(u64, String)>,
+        applier: Applier,
+        initialize: bool,
+        log_path: impl AsRef<std::path::Path>,
+        snapshot_path: impl Into<PathBuf>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let (sm, messages) = MessageSM::new_with_applier_and_snapshot(applier, snapshot_path);
+        Self::start_with_sm(
+            node_id,
+            listen,
+            peers,
+            sm,
+            messages,
+            initialize,
+            Some(log_path.as_ref().to_path_buf()),
+        )
+        .await
+    }
+
     async fn start_with_sm(
         node_id: u64,
         listen: &str,
@@ -537,6 +629,31 @@ mod tests {
     async fn free_port() -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         listener.local_addr().unwrap().port()
+    }
+
+    #[tokio::test]
+    async fn snapshot_survives_reopen() {
+        let path =
+            std::env::temp_dir().join(format!("mq-raft-snapshot-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let applier: Applier = Arc::new(|_| {});
+        let (mut sm, messages) = MessageSM::new_with_applier_and_snapshot(applier.clone(), &path);
+        let cmd = MessageCommand {
+            topic: "snap".into(),
+            queue_id: 0,
+            msg_id: "s1".into(),
+            body: b"x".to_vec(),
+            properties: String::new(),
+            deliver_at_ms: None,
+            tx_id: None,
+            tx_kind: None,
+        };
+        messages.write().await.push(cmd.clone());
+        sm.build_snapshot().await.unwrap();
+        drop(sm);
+        let (_sm2, messages2) = MessageSM::new_with_applier_and_snapshot(applier, &path);
+        assert_eq!(*messages2.read().await, vec![cmd]);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

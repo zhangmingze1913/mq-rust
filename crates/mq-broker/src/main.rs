@@ -519,13 +519,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
             });
             let raft_log = std::path::Path::new(&args.store_root).join("raft.log");
-            let raft = mq_raft::MessageRaft::start_persistent(
+            let raft_snapshot = std::path::Path::new(&args.store_root).join("raft.snapshot");
+            let raft = mq_raft::MessageRaft::start_with_applier_snapshot(
                 args.raft_id,
                 listen_addr,
                 peers,
                 applier,
                 initialize,
                 raft_log,
+                raft_snapshot,
             )
             .await?;
             if initialize {
