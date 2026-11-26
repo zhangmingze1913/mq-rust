@@ -205,6 +205,32 @@ pub fn spawn_leader_lease(
     });
 }
 
+pub fn spawn_raft_route(raft: Arc<mq_raft::MessageRaft>, admin: String, advertise: String) {
+    std::thread::spawn(move || {
+        use std::io::Write;
+        let addr = admin
+            .trim_start_matches("http://")
+            .trim_end_matches('/')
+            .to_string();
+        let mut was_leader = false;
+        loop {
+            let leader = raft.is_leader();
+            if leader && !was_leader {
+                if let Ok(mut stream) = std::net::TcpStream::connect(&addr) {
+                    let _ = stream.set_write_timeout(Some(Duration::from_millis(1500)));
+                    let req = format!(
+                        "POST /broker/{advertise} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = stream.write_all(req.as_bytes());
+                    tracing::info!(%advertise, "published raft leader route");
+                }
+            }
+            was_leader = leader;
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    });
+}
+
 fn build_tls_acceptor(config: &BrokerConfig) -> std::io::Result<Option<tokio_rustls::TlsAcceptor>> {
     let (Some(cert), Some(key)) = (&config.tls_cert, &config.tls_key) else {
         return Ok(None);

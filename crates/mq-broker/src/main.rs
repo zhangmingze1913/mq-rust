@@ -501,6 +501,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         _ => None,
     };
+    if let (Some(raft), Some(admin)) = (&raft, &args.namesrv_admin) {
+        let advertise = args
+            .advertise
+            .clone()
+            .unwrap_or_else(|| format!("127.0.0.1:{}", listen.port()));
+        mq_broker::server::spawn_raft_route(std::sync::Arc::clone(raft), admin.clone(), advertise);
+    }
     let config = BrokerConfig {
         listen,
         store,
