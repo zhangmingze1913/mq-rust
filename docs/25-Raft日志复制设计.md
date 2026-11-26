@@ -1,6 +1,6 @@
 # Raft 消息日志复制设计（1.0 剩余硬项）
 
-> 状态：原型已实现并通过 3 节点日志复制（R175）与 broker 单节点 SEND/Pull（R176）；持久化/多 broker/BATCH 未完成。生产默认仍是 quorum 复制。
+> 状态：3 broker Raft SEND/Pull 与 leader 切换已通过（R175–R177）；持久化、路由自动切换、BATCH 未完成。生产默认仍是 quorum 复制。
 
 ---
 
