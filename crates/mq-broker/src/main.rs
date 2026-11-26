@@ -491,8 +491,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let marker = std::path::Path::new(&args.store_root).join(".raft-initialized");
             let initialize = !marker.exists();
             let applier: mq_raft::Applier = std::sync::Arc::new(move |cmd| {
-                tracing::debug!(msg_id = %cmd.msg_id, "raft apply start");
-                if let Err(err) = target.append(stored_from_command(cmd, store_port)) {
+                let deliver_at = cmd.deliver_at_ms;
+                let msg = stored_from_command(cmd, store_port);
+                let result = if let Some(at) = deliver_at {
+                    target.schedule_delay(msg, at as i64);
+                    Ok(())
+                } else {
+                    target.append(msg).map(|_| ())
+                };
+                if let Err(err) = result {
                     tracing::warn!(%err, "raft apply failed");
                 }
             });

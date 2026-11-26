@@ -51,6 +51,8 @@ pub struct MessageCommand {
     pub msg_id: String,
     pub body: Vec<u8>,
     pub properties: String,
+    #[serde(default)]
+    pub deliver_at_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -572,6 +574,7 @@ mod tests {
             msg_id: "m1".into(),
             body: b"hello".to_vec(),
             properties: String::new(),
+            deliver_at_ms: None,
         };
         nodes[(leader - 1) as usize]
             .write(cmd.clone())

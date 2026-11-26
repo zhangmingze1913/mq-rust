@@ -532,9 +532,33 @@ async fn handle_command(
                 let now = mq_common::now_ms();
                 let start_deliver = start_deliver_at.filter(|t| *t > now).map(|t| t - now);
                 if let Some(delay_ms) = start_deliver.or_else(|| delay_level_ms(delay_level)) {
+                    let at = now + delay_ms;
+                    if let Some(raft) = &config.raft {
+                        if !raft.is_leader() {
+                            return Err(MqError::Store("not raft leader".into()));
+                        }
+                        let command = mq_raft::MessageCommand {
+                            topic: msg.topic.clone(),
+                            queue_id: msg.queue_id,
+                            msg_id: msg.msg_id.clone(),
+                            body: msg.body.to_vec(),
+                            properties: msg.properties.clone(),
+                            deliver_at_ms: Some(at.max(0) as u64),
+                        };
+                        raft.write(command).await.map_err(MqError::Store)?;
+                        let mut resp = RemotingCommand::response(response_code::SUCCESS, opaque);
+                        SendMessageResponse {
+                            msg_id: offset_msg_id(config.store_port, 0),
+                            queue_id: 0,
+                            queue_offset: 0,
+                            transaction_id: None,
+                        }
+                        .apply(&mut resp);
+                        return Ok(Some(resp));
+                    }
                     let msg_id = msg.msg_id.clone();
                     let topic = msg.topic.clone();
-                    config.store.schedule_delay(msg, now + delay_ms);
+                    config.store.schedule_delay(msg, at);
                     tracing::info!(topic = %topic, msg_id, delay_ms, "delayed message scheduled");
                     let mut resp = RemotingCommand::response(response_code::SUCCESS, opaque);
                     SendMessageResponse {
@@ -556,6 +580,7 @@ async fn handle_command(
                         msg_id: msg.msg_id.clone(),
                         body: msg.body.to_vec(),
                         properties: msg.properties.clone(),
+                        deliver_at_ms: None,
                     };
                     raft.write(command).await.map_err(MqError::Store)?;
                     tracing::debug!(msg_id = %msg.msg_id, "raft write committed");
@@ -690,6 +715,7 @@ async fn handle_command(
                         msg_id: msg.msg_id.clone(),
                         body: msg.body.to_vec(),
                         properties: msg.properties.clone(),
+                        deliver_at_ms: None,
                     })
                     .collect();
                 raft.write_batch(commands).await.map_err(MqError::Store)?;
