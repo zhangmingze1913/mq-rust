@@ -53,6 +53,10 @@ pub struct MessageCommand {
     pub properties: String,
     #[serde(default)]
     pub deliver_at_ms: Option<u64>,
+    #[serde(default)]
+    pub tx_id: Option<String>,
+    #[serde(default)]
+    pub tx_kind: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -575,6 +579,8 @@ mod tests {
             body: b"hello".to_vec(),
             properties: String::new(),
             deliver_at_ms: None,
+            tx_id: None,
+            tx_kind: None,
         };
         nodes[(leader - 1) as usize]
             .write(cmd.clone())

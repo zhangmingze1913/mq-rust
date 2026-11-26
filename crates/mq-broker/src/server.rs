@@ -544,6 +544,8 @@ async fn handle_command(
                             body: msg.body.to_vec(),
                             properties: msg.properties.clone(),
                             deliver_at_ms: Some(at.max(0) as u64),
+                            tx_id: None,
+                            tx_kind: None,
                         };
                         raft.write(command).await.map_err(MqError::Store)?;
                         let mut resp = RemotingCommand::response(response_code::SUCCESS, opaque);
@@ -581,6 +583,8 @@ async fn handle_command(
                         body: msg.body.to_vec(),
                         properties: msg.properties.clone(),
                         deliver_at_ms: None,
+                        tx_id: None,
+                        tx_kind: None,
                     };
                     raft.write(command).await.map_err(MqError::Store)?;
                     tracing::debug!(msg_id = %msg.msg_id, "raft write committed");
@@ -592,6 +596,24 @@ async fn handle_command(
                     config.store.append(msg)?
                 }
             };
+            if is_transaction {
+                if let Some(raft) = &config.raft {
+                    if !raft.is_leader() {
+                        return Err(MqError::Store("not raft leader".into()));
+                    }
+                    let command = mq_raft::MessageCommand {
+                        topic: saved.topic.clone(),
+                        queue_id: saved.queue_id,
+                        msg_id: saved.msg_id.clone(),
+                        body: saved.body.to_vec(),
+                        properties: saved.properties.clone(),
+                        deliver_at_ms: None,
+                        tx_id: Some(saved.msg_id.clone()),
+                        tx_kind: Some("half".into()),
+                    };
+                    raft.write(command).await.map_err(MqError::Store)?;
+                }
+            }
             config
                 .metrics
                 .send_total
@@ -716,6 +738,8 @@ async fn handle_command(
                         body: msg.body.to_vec(),
                         properties: msg.properties.clone(),
                         deliver_at_ms: None,
+                        tx_id: None,
+                        tx_kind: None,
                     })
                     .collect();
                 raft.write_batch(commands).await.map_err(MqError::Store)?;
@@ -1310,6 +1334,22 @@ async fn handle_command(
                         "transaction commit"
                     );
                     if committed.is_some() {
+                        if let Some(raft) = &config.raft {
+                            if !raft.is_leader() {
+                                return Err(MqError::Store("not raft leader".into()));
+                            }
+                            let command = mq_raft::MessageCommand {
+                                topic: String::new(),
+                                queue_id: 0,
+                                msg_id: msg_id.to_string(),
+                                body: Vec::new(),
+                                properties: String::new(),
+                                deliver_at_ms: None,
+                                tx_id: Some(tx_id.to_string()),
+                                tx_kind: Some("commit".into()),
+                            };
+                            raft.write(command).await.map_err(MqError::Store)?;
+                        }
                         if let Some(ref committed) = committed {
                             config.trace.record(
                                 "tx_commit",
@@ -1345,6 +1385,22 @@ async fn handle_command(
                     let rolled_back = config.store.rollback_half(tx_id, msg_id);
                     tracing::info!(tx_id, msg_id, rolled_back, "transaction rollback");
                     if rolled_back {
+                        if let Some(raft) = &config.raft {
+                            if !raft.is_leader() {
+                                return Err(MqError::Store("not raft leader".into()));
+                            }
+                            let command = mq_raft::MessageCommand {
+                                topic: String::new(),
+                                queue_id: 0,
+                                msg_id: msg_id.to_string(),
+                                body: Vec::new(),
+                                properties: String::new(),
+                                deliver_at_ms: None,
+                                tx_id: Some(tx_id.to_string()),
+                                tx_kind: Some("rollback".into()),
+                            };
+                            raft.write(command).await.map_err(MqError::Store)?;
+                        }
                         config.trace.record("tx_rollback", "", 0, 0, tx_id, None);
                         config
                             .metrics

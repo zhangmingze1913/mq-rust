@@ -492,12 +492,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let initialize = !marker.exists();
             let applier: mq_raft::Applier = std::sync::Arc::new(move |cmd| {
                 let deliver_at = cmd.deliver_at_ms;
+                let tx_id = cmd.tx_id.clone();
+                let tx_kind = cmd.tx_kind.clone();
                 let msg = stored_from_command(cmd, store_port);
-                let result = if let Some(at) = deliver_at {
-                    target.schedule_delay(msg, at as i64);
-                    Ok(())
-                } else {
-                    target.append(msg).map(|_| ())
+                let msg_id = msg.msg_id.clone();
+                let result = match (tx_kind.as_deref(), deliver_at) {
+                    (Some("half"), _) => target.prepare_half(msg).map(|_| ()),
+                    (Some("commit"), _) => tx_id
+                        .as_deref()
+                        .map(|id| target.commit_half(id, &msg_id).map(|_| ()))
+                        .unwrap_or(Ok(())),
+                    (Some("rollback"), _) => {
+                        if let Some(id) = tx_id.as_deref() {
+                            target.rollback_half(id, &msg_id);
+                        }
+                        Ok(())
+                    }
+                    (_, Some(at)) => {
+                        target.schedule_delay(msg, at as i64);
+                        Ok(())
+                    }
+                    _ => target.append(msg).map(|_| ()),
                 };
                 if let Err(err) = result {
                     tracing::warn!(%err, "raft apply failed");
