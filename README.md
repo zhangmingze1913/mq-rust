@@ -3,7 +3,7 @@
 > Rust 实现的分布式事务消息中间件，兼容 Apache RocketMQ 4.9.x Remoting 协议与 Java SDK。
 > 面向电商/金融等对“低延迟、高可靠、可审计、最终一致”有要求的场景。
 
-- **当前阶段**：R1–R210 完成；4 节点初始收发，bincode 日志
+- **当前阶段**：R1–R211 完成；重复事务提交幂等
 - **测试**：87 项 Rust 测试通过；RocketMQ 4.9.8 Java SDK 全量回归通过
 - **性能**：单条 100k 长跑 **9,347 TPS**；1M 长跑 **8,438 TPS/0 失败**；批量 64 条 **24,982 msg/s**；消费 20 线程 **11,130 TPS**
 - **目标**：兼容 RocketMQ 协议/SDK 的单机事务消息中间件 + TC Raft 集群
@@ -279,9 +279,10 @@ Producer/Consumer (RocketMQ Java SDK)
 | [R208-有界快照](docs/rounds/R208-bounded-snapshot.md) | 尾部 1000 |
 | [R209-gRPC 示例](docs/rounds/R209-grpc-client-example.md) | Health/Stats/Tx |
 | [R210-4 broker/日志格式](docs/rounds/R210-4broker-disk-format.md) | bincode/迁移 |
+| [R211-重复事务提交](docs/rounds/R211-tx-dup-commit.md) | 幂等 |
 | [图表索引](docs/图表索引.md) | PNG/PlantUML |
 
-分阶段报告：`docs/rounds/R01.md` … `R210-4broker-disk-format.md`（R174/R185/R189/R200/R203/R206 为负结果）；1.0 剩余计划见 [22-1.0剩余工作计划](docs/22-1.0剩余工作计划.md)，接手见 [23-交付交接](docs/23-交付交接.md)；最终验收见 [16-最终验收报告](docs/16-最终验收报告.md)，交付说明见 [21-最终交付说明](docs/21-最终交付说明.md)，交付索引见 [20-交付索引](docs/20-交付索引.md)。
+分阶段报告：`docs/rounds/R01.md` … `R211-tx-dup-commit.md`（R174/R185/R189/R200/R203/R206 为负结果）；1.0 剩余计划见 [22-1.0剩余工作计划](docs/22-1.0剩余工作计划.md)，接手见 [23-交付交接](docs/23-交付交接.md)；最终验收见 [16-最终验收报告](docs/16-最终验收报告.md)，交付说明见 [21-最终交付说明](docs/21-最终交付说明.md)，交付索引见 [20-交付索引](docs/20-交付索引.md)。
 
 Windows 分发包：[mq-rust-0.9.0-rc.1-win64.zip](dist/mq-rust-0.9.0-rc.1-win64.zip)。
 
