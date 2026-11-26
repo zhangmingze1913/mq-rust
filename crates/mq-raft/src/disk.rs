@@ -1,11 +1,10 @@
 //! Minimal durable Raft log store.
 //!
-//! It keeps a full in-memory snapshot of the log (entries + vote + purged id)
-//! and rewrites a JSON file after each mutation. This is intentionally simple;
-//! production should switch to a segmented log.
+//! The file is append-only JSONL. On startup records are replayed into an
+//! in-memory `MemLogStore`. Compaction is not implemented yet.
 
 use std::fmt::Debug;
-use std::io;
+use std::io::{self, Write};
 use std::ops::RangeBounds;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -31,6 +30,38 @@ struct DiskState {
     entries: Vec<EntryOf<TypeConfig>>,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "op")]
+enum DiskRecord {
+    #[serde(rename = "v")]
+    Vote { vote: VoteOf<TypeConfig> },
+    #[serde(rename = "a")]
+    Append { entry: EntryOf<TypeConfig> },
+    #[serde(rename = "t")]
+    Truncate { last: Option<LogIdOf<TypeConfig>> },
+    #[serde(rename = "p")]
+    Purge { id: LogIdOf<TypeConfig> },
+}
+
+fn apply_record(state: &mut DiskState, record: DiskRecord) {
+    match record {
+        DiskRecord::Vote { vote } => state.vote = Some(vote),
+        DiskRecord::Append { entry } => {
+            state.entries.retain(|e| e.index() != entry.index());
+            state.entries.push(entry);
+            state.entries.sort_by_key(|e| e.index());
+        }
+        DiskRecord::Truncate { last } => {
+            let keep = last.map(|id| id.index()).unwrap_or(0);
+            state.entries.retain(|e| e.index() <= keep);
+        }
+        DiskRecord::Purge { id } => {
+            state.purged = Some(id);
+            state.entries.retain(|e| e.index() > id.index());
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct DiskLogStore {
     inner: Arc<MemLogStore>,
@@ -41,12 +72,20 @@ pub struct DiskLogStore {
 impl DiskLogStore {
     pub async fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let state = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => DiskState::default(),
-            Err(err) => return Err(err),
-        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut state = DiskState::default();
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            for line in text.lines() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if let Ok(record) = serde_json::from_str::<DiskRecord>(line) {
+                    apply_record(&mut state, record);
+                }
+            }
+        }
         let inner = Arc::new(MemLogStore::new(Default::default()));
         if let Some(vote) = &state.vote {
             RaftLogStorage::save_vote(&mut Arc::clone(&inner), vote).await?;
@@ -69,14 +108,17 @@ impl DiskLogStore {
         })
     }
 
-    fn persist(&self) {
-        let state = self.state.lock().unwrap();
-        let Ok(bytes) = serde_json::to_vec(&*state) else {
+    fn write_record(&self, record: &DiskRecord) {
+        let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&*self.path)
+        else {
             return;
         };
-        let tmp = self.path.with_extension("tmp");
-        if std::fs::write(&tmp, bytes).is_ok() {
-            let _ = std::fs::rename(&tmp, &*self.path);
+        if serde_json::to_writer(&mut file, record).is_ok() {
+            let _ = file.write_all(b"\n");
+            let _ = file.flush();
         }
     }
 }
@@ -110,7 +152,7 @@ impl RaftLogStorage<TypeConfig> for DiskLogStore {
 
     async fn save_vote(&mut self, vote: &VoteOf<TypeConfig>) -> Result<(), io::Error> {
         self.state.lock().unwrap().vote = Some(*vote);
-        self.persist();
+        self.write_record(&DiskRecord::Vote { vote: *vote });
         RaftLogStorage::save_vote(&mut Arc::clone(&self.inner), vote).await
     }
 
@@ -142,7 +184,11 @@ impl RaftLogStorage<TypeConfig> for DiskLogStore {
             }
             state.entries.sort_by_key(|e| e.index());
         }
-        self.persist();
+        for entry in &entries {
+            self.write_record(&DiskRecord::Append {
+                entry: entry.clone(),
+            });
+        }
         RaftLogStorage::append(&mut Arc::clone(&self.inner), entries, callback).await
     }
 
@@ -155,7 +201,7 @@ impl RaftLogStorage<TypeConfig> for DiskLogStore {
             let keep = last_log_id.map(|id| id.index()).unwrap_or(0);
             state.entries.retain(|e| e.index() <= keep);
         }
-        self.persist();
+        self.write_record(&DiskRecord::Truncate { last: last_log_id });
         RaftLogStorage::truncate_after(&mut Arc::clone(&self.inner), last_log_id).await
     }
 
@@ -165,7 +211,7 @@ impl RaftLogStorage<TypeConfig> for DiskLogStore {
             state.purged = Some(log_id);
             state.entries.retain(|e| e.index() > log_id.index());
         }
-        self.persist();
+        self.write_record(&DiskRecord::Purge { id: log_id });
         RaftLogStorage::purge(&mut Arc::clone(&self.inner), log_id).await
     }
 }

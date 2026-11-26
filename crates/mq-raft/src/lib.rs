@@ -53,6 +53,22 @@ pub struct MessageCommand {
     pub properties: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RaftCommand {
+    Batch { messages: Vec<MessageCommand> },
+    Single(MessageCommand),
+}
+
+impl RaftCommand {
+    fn into_messages(self) -> Vec<MessageCommand> {
+        match self {
+            RaftCommand::Batch { messages } => messages,
+            RaftCommand::Single(message) => vec![message],
+        }
+    }
+}
+
 pub type Messages = Arc<RwLock<Vec<MessageCommand>>>;
 pub type Raft = Arc<openraft::Raft<TypeConfig, MessageSM>>;
 pub type Applier = Arc<dyn Fn(MessageCommand) + Send + Sync>;
@@ -128,11 +144,13 @@ impl RaftStateMachine<TypeConfig> for MessageSM {
             let response = match entry.payload {
                 EntryPayload::Blank => ClientResponse(None),
                 EntryPayload::Normal(ref data) => {
-                    if let Ok(cmd) = serde_json::from_str::<MessageCommand>(&data.status) {
-                        if let Some(applier) = &self.applier {
-                            applier(cmd.clone());
+                    if let Ok(cmd) = serde_json::from_str::<RaftCommand>(&data.status) {
+                        for message in cmd.into_messages() {
+                            if let Some(applier) = &self.applier {
+                                applier(message.clone());
+                            }
+                            self.messages.write().await.push(message);
                         }
-                        self.messages.write().await.push(cmd);
                     }
                     ClientResponse(None)
                 }
@@ -474,7 +492,25 @@ impl MessageRaft {
         let req = ClientRequest {
             client: cmd.msg_id.clone(),
             serial: 1,
-            status: serde_json::to_string(&cmd).map_err(|e| e.to_string())?,
+            status: serde_json::to_string(&RaftCommand::Single(cmd)).map_err(|e| e.to_string())?,
+        };
+        self.raft
+            .client_write(req)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub async fn write_batch(&self, messages: Vec<MessageCommand>) -> Result<(), String> {
+        let client = messages
+            .first()
+            .map(|m| m.msg_id.clone())
+            .unwrap_or_else(|| "batch".into());
+        let req = ClientRequest {
+            client,
+            serial: 1,
+            status: serde_json::to_string(&RaftCommand::Batch { messages })
+                .map_err(|e| e.to_string())?,
         };
         self.raft
             .client_write(req)

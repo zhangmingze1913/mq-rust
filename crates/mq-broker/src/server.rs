@@ -649,13 +649,12 @@ async fn handle_command(
             let req = SendMessageRequest::from_ext(ext, true)?;
             let queue_id = if req.queue_id < 0 { 0 } else { req.queue_id };
             let mut pos = 0usize;
-            let mut count = 0u64;
-            let mut last: Option<StoredMessage> = None;
+            let mut decoded: Vec<StoredMessage> = Vec::new();
             while pos < cmd.body.len() {
                 let (batch_msg, used) =
                     mq_protocol::message::decode_batch_message(&cmd.body[pos..])?;
                 pos += used;
-                let msg = StoredMessage {
+                decoded.push(StoredMessage {
                     msg_id: mq_protocol::message::property_value(&batch_msg.properties, "UNIQ_KEY")
                         .unwrap_or_else(new_msg_id),
                     topic: req.topic.clone(),
@@ -674,19 +673,31 @@ async fn handle_command(
                     prepared_transaction_offset: 0,
                     body: batch_msg.body,
                     properties: batch_msg.properties,
-                };
-                let saved = if let Some(raft) = &config.raft {
-                    if !raft.is_leader() {
-                        return Err(MqError::Store("not raft leader".into()));
-                    }
-                    let command = mq_raft::MessageCommand {
+                });
+            }
+            if decoded.is_empty() {
+                return Err(MqError::Protocol("empty batch message".into()));
+            }
+            if let Some(raft) = &config.raft {
+                if !raft.is_leader() {
+                    return Err(MqError::Store("not raft leader".into()));
+                }
+                let commands = decoded
+                    .iter()
+                    .map(|msg| mq_raft::MessageCommand {
                         topic: msg.topic.clone(),
                         queue_id: msg.queue_id,
                         msg_id: msg.msg_id.clone(),
                         body: msg.body.to_vec(),
                         properties: msg.properties.clone(),
-                    };
-                    raft.write(command).await.map_err(MqError::Store)?;
+                    })
+                    .collect();
+                raft.write_batch(commands).await.map_err(MqError::Store)?;
+            }
+            let count = decoded.len() as u64;
+            let mut last: Option<StoredMessage> = None;
+            for msg in decoded {
+                let saved = if config.raft.is_some() {
                     config.store.message_by_id(&msg.msg_id).ok_or_else(|| {
                         MqError::Store("raft applied batch message not found".into())
                     })?
@@ -702,10 +713,6 @@ async fn handle_command(
                     None,
                 );
                 last = Some(saved);
-                count += 1;
-            }
-            if count == 0 {
-                return Err(MqError::Protocol("empty batch message".into()));
             }
             let saved = last.unwrap();
             config
