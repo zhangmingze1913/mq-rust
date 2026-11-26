@@ -1,7 +1,8 @@
 //! Minimal durable Raft log store.
 //!
-//! The file is append-only JSONL. On startup records are replayed into an
-//! in-memory `MemLogStore`. Compaction is not implemented yet.
+//! New logs are length-prefixed `bincode` records. Legacy JSONL logs are
+//! replayed on open (including membership entries) and rewritten on the next
+//! compaction.
 
 use std::fmt::Debug;
 use std::io::{self, Write};
@@ -12,16 +13,19 @@ use std::sync::{Arc, Mutex};
 use openraft::alias::EntryOf;
 use openraft::alias::LogIdOf;
 use openraft::alias::VoteOf;
+use openraft::entry::EntryPayload;
 use openraft::entry::RaftEntry;
 use openraft::storage::IOFlushed;
 use openraft::storage::LogState;
 use openraft::storage::RaftLogReader;
 use openraft::storage::RaftLogStorage;
+use openraft::Membership;
 use openraft::OptionalSend;
 use openraft_memstore::MemLogStore;
 use openraft_memstore::TypeConfig;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::BTreeSet;
 
 #[derive(Default, Serialize, Deserialize)]
 struct DiskState {
@@ -41,6 +45,22 @@ enum DiskRecord {
     Truncate { last: Option<LogIdOf<TypeConfig>> },
     #[serde(rename = "p")]
     Purge { id: LogIdOf<TypeConfig> },
+}
+
+fn legacy_record(line: &str) -> Option<DiskRecord> {
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    if let Ok(record) = serde_json::from_value::<DiskRecord>(value.clone()) {
+        return Some(record);
+    }
+    let entry = value.get("entry")?;
+    let log_id: LogIdOf<TypeConfig> = serde_json::from_value(entry.get("log_id")?.clone()).ok()?;
+    let membership = entry.get("payload")?.get("Membership")?;
+    let configs: Vec<BTreeSet<u64>> =
+        serde_json::from_value(membership.get("configs")?.clone()).ok()?;
+    let nodes: Vec<u64> = configs.iter().flatten().copied().collect();
+    let membership = Membership::new_with_defaults(configs, nodes);
+    let entry = EntryOf::<TypeConfig>::new(log_id, EntryPayload::Membership(membership));
+    Some(DiskRecord::Append { entry })
 }
 
 fn apply_record(state: &mut DiskState, record: DiskRecord) {
@@ -76,13 +96,31 @@ impl DiskLogStore {
             std::fs::create_dir_all(parent)?;
         }
         let mut state = DiskState::default();
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            for line in text.lines() {
-                if line.trim().is_empty() {
-                    continue;
+        if let Ok(bytes) = std::fs::read(&path) {
+            if bytes.first() == Some(&b'{') {
+                if let Ok(text) = std::str::from_utf8(&bytes) {
+                    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+                        if let Some(record) = legacy_record(line) {
+                            apply_record(&mut state, record);
+                        } else {
+                            eprintln!("disk skip legacy record");
+                        }
+                    }
                 }
-                if let Ok(record) = serde_json::from_str::<DiskRecord>(line) {
-                    apply_record(&mut state, record);
+            } else {
+                let mut pos = 0usize;
+                while pos + 4 <= bytes.len() {
+                    let len = u32::from_be_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
+                    pos += 4;
+                    if pos + len > bytes.len() {
+                        break;
+                    }
+                    if let Ok(record) = bincode::deserialize::<DiskRecord>(&bytes[pos..pos + len]) {
+                        apply_record(&mut state, record);
+                    } else {
+                        eprintln!("disk skip record at {pos}");
+                    }
+                    pos += len;
                 }
             }
         }
@@ -91,12 +129,10 @@ impl DiskLogStore {
             RaftLogStorage::save_vote(&mut Arc::clone(&inner), vote).await?;
         }
         if !state.entries.is_empty() {
-            RaftLogStorage::append(
-                &mut Arc::clone(&inner),
-                state.entries.clone(),
-                IOFlushed::noop(),
-            )
-            .await?;
+            for entry in state.entries.clone() {
+                RaftLogStorage::append(&mut Arc::clone(&inner), vec![entry], IOFlushed::noop())
+                    .await?;
+            }
         }
         if let Some(purged) = state.purged {
             RaftLogStorage::purge(&mut Arc::clone(&inner), purged).await?;
@@ -116,8 +152,10 @@ impl DiskLogStore {
         else {
             return;
         };
-        if serde_json::to_writer(&mut file, record).is_ok() {
-            let _ = file.write_all(b"\n");
+        if let Ok(bytes) = bincode::serialize(record) {
+            let len = (bytes.len() as u32).to_be_bytes();
+            let _ = file.write_all(&len);
+            let _ = file.write_all(&bytes);
             let _ = file.flush();
         }
     }
@@ -130,8 +168,10 @@ impl DiskLogStore {
             return;
         };
         let mut write = |record: &DiskRecord| {
-            if serde_json::to_writer(&mut file, record).is_ok() {
-                let _ = file.write_all(b"\n");
+            if let Ok(bytes) = bincode::serialize(record) {
+                let len = (bytes.len() as u32).to_be_bytes();
+                let _ = file.write_all(&len);
+                let _ = file.write_all(&bytes);
             }
         };
         if let Some(vote) = state.vote {
@@ -241,5 +281,20 @@ impl RaftLogStorage<TypeConfig> for DiskLogStore {
         }
         self.rewrite();
         RaftLogStorage::purge(&mut Arc::clone(&self.inner), log_id).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_membership_record_parses() {
+        let line = r#"{"op":"a","entry":{"log_id":{"leader_id":{"term":0,"node_id":4},"index":0},"payload":{"Membership":{"configs":[[1,2,3,4]],"nodes":{"1":null,"2":null,"3":null,"4":null}}}}}"#;
+        let record = legacy_record(line).expect("legacy membership record");
+        match record {
+            DiskRecord::Append { entry } => assert_eq!(entry.index(), 0),
+            _ => panic!("expected append"),
+        }
     }
 }

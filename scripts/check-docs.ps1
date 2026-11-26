@@ -25,11 +25,11 @@ foreach ($pair in @(
     @("16", $doc16),
     @("20", $doc20)
 )) {
-    if ($pair[1] -notmatch "86 ") {
-        $errors.Add("$($pair[0]) does not mention 86 tests")
+    if ($pair[1] -notmatch "87 ") {
+        $errors.Add("$($pair[0]) does not mention 87 tests")
     }
 }
-if ($changelog -notmatch "86 ") { $errors.Add("CHANGELOG does not mention 86 tests") }
+if ($changelog -notmatch "87 ") { $errors.Add("CHANGELOG does not mention 87 tests") }
 
 $zip = Join-Path $Root "dist\mq-rust-0.9.0-rc.1-win64.zip"
 if (-not (Test-Path $zip)) {
@@ -43,8 +43,8 @@ if (-not (Test-Path $zip)) {
     }
 }
 
-if ($readme -notmatch "R209") { $errors.Add("README does not mention R209") }
-if ($doc20 -notmatch "R209") { $errors.Add("20 does not mention R209") }
+if ($readme -notmatch "R210") { $errors.Add("README does not mention R210") }
+if ($doc20 -notmatch "R210") { $errors.Add("20 does not mention R210") }
 
 $mdFiles = @(Get-ChildItem (Join-Path $Root "docs") -Recurse -Filter *.md)
 $mdFiles += Get-Item (Join-Path $Root "README.md")
