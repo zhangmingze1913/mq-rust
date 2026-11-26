@@ -1,6 +1,6 @@
 # Raft 消息日志复制设计（1.0 剩余硬项）
 
-> 状态：3 broker Raft SEND/BATCH、自动路由、follower 追平、单节点日志持久化已通过（R175–R181）；分段日志/快照/全集群重启未完成。
+> 状态：3 broker Raft SEND/BATCH、自动路由、follower 追平、日志持久化、全集群重启已通过（R175–R182）；分段日志/快照/网络分区未完成。
 
 ---
 
