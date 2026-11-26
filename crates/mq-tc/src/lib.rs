@@ -725,16 +725,18 @@ mod tests {
         let a = a.unwrap();
         let b = b.unwrap();
         let c = c.unwrap();
-        let mut leader = None;
-        for tc in [&a, &b, &c] {
-            if tc.raft.is_leader() {
-                leader = Some(tc);
-                break;
+        let mut wrote = false;
+        for _ in 0..100 {
+            let leader = [&a, &b, &c].into_iter().find(|tc| tc.raft.is_leader());
+            if let Some(leader) = leader {
+                if leader.prepare("tx-tcp").await.is_ok() && leader.commit("tx-tcp").await.is_ok() {
+                    wrote = true;
+                    break;
+                }
             }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        let leader = leader.expect("no TCP leader");
-        leader.prepare("tx-tcp").await.unwrap();
-        leader.commit("tx-tcp").await.unwrap();
+        assert!(wrote, "no stable TCP leader accepted the write");
         for _ in 0..20 {
             let a_s = a.status("tx-tcp").await;
             let b_s = b.status("tx-tcp").await;
