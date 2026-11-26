@@ -74,6 +74,10 @@ struct WriteJob {
 
 enum WriteCmd {
     Job(WriteJob),
+    Batch {
+        msgs: Vec<StoredMessage>,
+        reply: SyncSender<Vec<Result<StoredMessage>>>,
+    },
     Sync(SyncSender<Result<()>>),
 }
 
@@ -99,6 +103,21 @@ impl CommitWriter {
         rx.recv()
             .map_err(|_| MqError::Store("commit writer reply lost".into()))?
     }
+
+    fn submit_batch(&self, msgs: Vec<StoredMessage>) -> Result<Vec<StoredMessage>> {
+        let (reply, rx) = mpsc::sync_channel(0);
+        self.tx
+            .send(WriteCmd::Batch { msgs, reply })
+            .map_err(|_| MqError::Store("commit writer stopped".into()))?;
+        let results = rx
+            .recv()
+            .map_err(|_| MqError::Store("commit writer batch reply lost".into()))?;
+        let mut out = Vec::with_capacity(results.len());
+        for result in results {
+            out.push(result?);
+        }
+        Ok(out)
+    }
 }
 
 fn run_commit_writer(mut log: CommitLog, rx: Receiver<WriteCmd>) {
@@ -109,6 +128,22 @@ fn run_commit_writer(mut log: CommitLog, rx: Receiver<WriteCmd>) {
                 while jobs.len() < 64 {
                     match rx.try_recv() {
                         Ok(WriteCmd::Job(job)) => jobs.push(job),
+                        Ok(WriteCmd::Batch { msgs, reply }) => {
+                            let mut results = Vec::with_capacity(msgs.len());
+                            for mut msg in msgs {
+                                msg.physical_offset = log.len() as i64;
+                                let payload = msg.encode();
+                                match log.append(&payload) {
+                                    Ok(offset) => {
+                                        msg.physical_offset = offset.physical_offset as i64;
+                                        results.push(Ok(msg));
+                                    }
+                                    Err(err) => results
+                                        .push(Err(MqError::Store(format!("append batch: {err}")))),
+                                }
+                            }
+                            let _ = reply.send(results);
+                        }
                         Ok(WriteCmd::Sync(reply)) => {
                             let _ = reply.send(log.sync());
                         }
@@ -131,6 +166,23 @@ fn run_commit_writer(mut log: CommitLog, rx: Receiver<WriteCmd>) {
                         }
                     }
                 }
+            }
+            Ok(WriteCmd::Batch { msgs, reply }) => {
+                let mut results = Vec::with_capacity(msgs.len());
+                for mut msg in msgs {
+                    msg.physical_offset = log.len() as i64;
+                    let payload = msg.encode();
+                    match log.append(&payload) {
+                        Ok(offset) => {
+                            msg.physical_offset = offset.physical_offset as i64;
+                            results.push(Ok(msg));
+                        }
+                        Err(err) => {
+                            results.push(Err(MqError::Store(format!("append batch: {err}"))))
+                        }
+                    }
+                }
+                let _ = reply.send(results);
             }
             Ok(WriteCmd::Sync(reply)) => {
                 let _ = reply.send(log.sync());
@@ -768,6 +820,36 @@ impl BrokerStore {
         self.append_internal(msg, true)
     }
 
+    /// Persist a batch in one writer job, then register each message.
+    pub fn append_batch(&self, msgs: Vec<StoredMessage>) -> Result<Vec<StoredMessage>> {
+        if msgs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let persisted = if let Some(writer) = &self.writer {
+            writer.submit_batch(msgs)?
+        } else {
+            let shard = msgs[0].queue_id.rem_euclid(self.shards as i32) as usize;
+            let mut out = Vec::with_capacity(msgs.len());
+            if let Some(log) = self.logs.get(shard) {
+                let mut log = log.lock().unwrap();
+                for mut msg in msgs {
+                    let payload = msg.encode();
+                    let offset = log.append(&payload)?;
+                    msg.physical_offset = offset.physical_offset as i64;
+                    out.push(msg);
+                }
+            }
+            out
+        };
+        let mut out = Vec::with_capacity(persisted.len());
+        for msg in persisted {
+            let len = msg.encode().len();
+            let physical = msg.physical_offset;
+            out.push(self.register_message(msg, Some(physical), true, len)?);
+        }
+        Ok(out)
+    }
+
     fn append_internal(&self, mut msg: StoredMessage, persist: bool) -> Result<StoredMessage> {
         let shard = dedup_shard(&msg.topic, &msg.msg_id);
         let dedup_hit = {
@@ -810,6 +892,17 @@ impl BrokerStore {
                 }
             }
         }
+        self.register_message(msg, persisted_offset, persist, encoded_len)
+    }
+
+    fn register_message(
+        &self,
+        mut msg: StoredMessage,
+        persisted_offset: Option<i64>,
+        persist: bool,
+        encoded_len: usize,
+    ) -> Result<StoredMessage> {
+        let shard = dedup_shard(&msg.topic, &msg.msg_id);
         let topic_lock = {
             let existing = self.topics.read().unwrap().get(&msg.topic).cloned();
             match existing {

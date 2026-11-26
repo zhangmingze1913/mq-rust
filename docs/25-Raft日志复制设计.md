@@ -1,6 +1,6 @@
 # Raft 消息日志复制设计（1.0 剩余硬项）
 
-> 状态：3 broker Raft SEND/BATCH、自动路由、追平、持久化、重启、分区、延时、事务（Raft-first）、快照/压缩、half 崩溃恢复已通过（R175–R199）；batch64 调优负结果（R200）；三副本 batch256 长跑仍有超时。
+> 状态：3 broker Raft SEND/BATCH、自动路由、追平、持久化、重启、分区、延时、事务、快照/压缩、批量 apply 已通过（R175–R201）；三副本 batch256 60s 118k/0 失败；1M 未做。
 
 ---
 

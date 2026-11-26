@@ -487,9 +487,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 })
                 .collect::<Vec<_>>();
             let target = std::sync::Arc::clone(&store);
+            let batch_target = std::sync::Arc::clone(&store);
             let store_port = listen.port();
             let marker = std::path::Path::new(&args.store_root).join(".raft-initialized");
             let initialize = !marker.exists();
+            let batch_applier: mq_raft::BatchApplier = std::sync::Arc::new(move |cmds| {
+                let msgs: Vec<_> = cmds
+                    .into_iter()
+                    .map(|cmd| stored_from_command(cmd, store_port))
+                    .collect();
+                if let Err(err) = batch_target.append_batch(msgs) {
+                    tracing::warn!(%err, "raft batch apply failed");
+                }
+            });
             let applier: mq_raft::Applier = std::sync::Arc::new(move |cmd| {
                 let deliver_at = cmd.deliver_at_ms;
                 let tx_id = cmd.tx_id.clone();
@@ -520,11 +530,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             });
             let raft_log = std::path::Path::new(&args.store_root).join("raft.log");
             let raft_snapshot = std::path::Path::new(&args.store_root).join("raft.snapshot");
-            let raft = mq_raft::MessageRaft::start_with_applier_snapshot(
+            let raft = mq_raft::MessageRaft::start_with_appliers_snapshot(
                 args.raft_id,
                 listen_addr,
                 peers,
                 applier,
+                batch_applier,
                 initialize,
                 raft_log,
                 raft_snapshot,

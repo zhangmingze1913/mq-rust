@@ -67,24 +67,17 @@ pub enum RaftCommand {
     Single(MessageCommand),
 }
 
-impl RaftCommand {
-    fn into_messages(self) -> Vec<MessageCommand> {
-        match self {
-            RaftCommand::Batch { messages } => messages,
-            RaftCommand::Single(message) => vec![message],
-        }
-    }
-}
-
 pub type Messages = Arc<RwLock<Vec<MessageCommand>>>;
 pub type Raft = Arc<openraft::Raft<TypeConfig, MessageSM>>;
 pub type Applier = Arc<dyn Fn(MessageCommand) + Send + Sync>;
+pub type BatchApplier = Arc<dyn Fn(Vec<MessageCommand>) + Send + Sync>;
 type CurrentSnapshot = Arc<RwLock<Option<SnapshotOf<TypeConfig, Cursor<Vec<u8>>>>>>;
 
 #[derive(Clone)]
 pub struct MessageSM {
     messages: Messages,
     applier: Option<Applier>,
+    batch_applier: Option<BatchApplier>,
     applied: Arc<RwLock<Option<LogIdOf<TypeConfig>>>>,
     membership: Arc<RwLock<StoredMembershipOf<TypeConfig>>>,
     current: CurrentSnapshot,
@@ -103,6 +96,7 @@ impl Default for MessageSM {
         Self {
             messages: Arc::new(RwLock::new(Vec::new())),
             applier: None,
+            batch_applier: None,
             applied: Arc::new(RwLock::new(None)),
             membership: Arc::new(RwLock::new(StoredMembershipOf::<TypeConfig>::default())),
             current: Arc::new(RwLock::new(None)),
@@ -159,6 +153,7 @@ impl MessageSM {
             Self {
                 messages: Arc::clone(&messages),
                 applier: Some(applier),
+                batch_applier: None,
                 applied,
                 membership,
                 current: Arc::new(RwLock::new(None)),
@@ -166,6 +161,16 @@ impl MessageSM {
             },
             messages,
         )
+    }
+
+    pub fn new_with_appliers_and_snapshot(
+        applier: Applier,
+        batch_applier: BatchApplier,
+        snapshot_path: impl Into<PathBuf>,
+    ) -> (Self, Messages) {
+        let (mut sm, messages) = Self::new_with_applier_and_snapshot(applier, snapshot_path);
+        sm.batch_applier = Some(batch_applier);
+        (sm, messages)
     }
 
     fn persist_snapshot(
@@ -217,11 +222,25 @@ impl RaftStateMachine<TypeConfig> for MessageSM {
                 EntryPayload::Blank => ClientResponse(None),
                 EntryPayload::Normal(ref data) => {
                     if let Ok(cmd) = serde_json::from_str::<RaftCommand>(&data.status) {
-                        for message in cmd.into_messages() {
-                            if let Some(applier) = &self.applier {
-                                applier(message.clone());
+                        match cmd {
+                            RaftCommand::Batch { messages } => {
+                                if let Some(batch_applier) = &self.batch_applier {
+                                    batch_applier(messages.clone());
+                                } else {
+                                    for message in &messages {
+                                        if let Some(applier) = &self.applier {
+                                            applier(message.clone());
+                                        }
+                                    }
+                                }
+                                self.messages.write().await.extend(messages);
                             }
-                            self.messages.write().await.push(message);
+                            RaftCommand::Single(message) => {
+                                if let Some(applier) = &self.applier {
+                                    applier(message.clone());
+                                }
+                                self.messages.write().await.push(message);
+                            }
                         }
                     }
                     ClientResponse(None)
@@ -476,6 +495,31 @@ impl MessageRaft {
         log_path: impl AsRef<std::path::Path>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (sm, messages) = MessageSM::new_with_applier(applier);
+        Self::start_with_sm(
+            node_id,
+            listen,
+            peers,
+            sm,
+            messages,
+            initialize,
+            Some(log_path.as_ref().to_path_buf()),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_with_appliers_snapshot(
+        node_id: u64,
+        listen: &str,
+        peers: Vec<(u64, String)>,
+        applier: Applier,
+        batch_applier: BatchApplier,
+        initialize: bool,
+        log_path: impl AsRef<std::path::Path>,
+        snapshot_path: impl Into<PathBuf>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let (sm, messages) =
+            MessageSM::new_with_appliers_and_snapshot(applier, batch_applier, snapshot_path);
         Self::start_with_sm(
             node_id,
             listen,
