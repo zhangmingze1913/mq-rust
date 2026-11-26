@@ -1326,7 +1326,32 @@ async fn handle_command(
                 .unwrap_or(0);
             match action {
                 8 => {
-                    let committed = config.store.commit_half(tx_id, msg_id)?;
+                    let raft_committed = if let Some(raft) = &config.raft {
+                        if !raft.is_leader() {
+                            return Err(MqError::Store("not raft leader".into()));
+                        }
+                        let command = mq_raft::MessageCommand {
+                            topic: String::new(),
+                            queue_id: 0,
+                            msg_id: msg_id.to_string(),
+                            body: Vec::new(),
+                            properties: String::new(),
+                            deliver_at_ms: None,
+                            tx_id: Some(tx_id.to_string()),
+                            tx_kind: Some("commit".into()),
+                        };
+                        raft.write(command).await.map_err(MqError::Store)?;
+                        true
+                    } else {
+                        false
+                    };
+                    let committed = if raft_committed {
+                        config
+                            .store
+                            .message_by_id(if msg_id.is_empty() { tx_id } else { msg_id })
+                    } else {
+                        config.store.commit_half(tx_id, msg_id)?
+                    };
                     tracing::info!(
                         tx_id,
                         msg_id,
@@ -1334,22 +1359,6 @@ async fn handle_command(
                         "transaction commit"
                     );
                     if committed.is_some() {
-                        if let Some(raft) = &config.raft {
-                            if !raft.is_leader() {
-                                return Err(MqError::Store("not raft leader".into()));
-                            }
-                            let command = mq_raft::MessageCommand {
-                                topic: String::new(),
-                                queue_id: 0,
-                                msg_id: msg_id.to_string(),
-                                body: Vec::new(),
-                                properties: String::new(),
-                                deliver_at_ms: None,
-                                tx_id: Some(tx_id.to_string()),
-                                tx_kind: Some("commit".into()),
-                            };
-                            raft.write(command).await.map_err(MqError::Store)?;
-                        }
                         if let Some(ref committed) = committed {
                             config.trace.record(
                                 "tx_commit",
@@ -1382,25 +1391,32 @@ async fn handle_command(
                     }
                 }
                 12 => {
-                    let rolled_back = config.store.rollback_half(tx_id, msg_id);
+                    let raft_rollback = if let Some(raft) = &config.raft {
+                        if !raft.is_leader() {
+                            return Err(MqError::Store("not raft leader".into()));
+                        }
+                        let command = mq_raft::MessageCommand {
+                            topic: String::new(),
+                            queue_id: 0,
+                            msg_id: msg_id.to_string(),
+                            body: Vec::new(),
+                            properties: String::new(),
+                            deliver_at_ms: None,
+                            tx_id: Some(tx_id.to_string()),
+                            tx_kind: Some("rollback".into()),
+                        };
+                        raft.write(command).await.map_err(MqError::Store)?;
+                        true
+                    } else {
+                        false
+                    };
+                    let rolled_back = if raft_rollback {
+                        true
+                    } else {
+                        config.store.rollback_half(tx_id, msg_id)
+                    };
                     tracing::info!(tx_id, msg_id, rolled_back, "transaction rollback");
                     if rolled_back {
-                        if let Some(raft) = &config.raft {
-                            if !raft.is_leader() {
-                                return Err(MqError::Store("not raft leader".into()));
-                            }
-                            let command = mq_raft::MessageCommand {
-                                topic: String::new(),
-                                queue_id: 0,
-                                msg_id: msg_id.to_string(),
-                                body: Vec::new(),
-                                properties: String::new(),
-                                deliver_at_ms: None,
-                                tx_id: Some(tx_id.to_string()),
-                                tx_kind: Some("rollback".into()),
-                            };
-                            raft.write(command).await.map_err(MqError::Store)?;
-                        }
                         config.trace.record("tx_rollback", "", 0, 0, tx_id, None);
                         config
                             .metrics
