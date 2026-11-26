@@ -488,15 +488,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .collect::<Vec<_>>();
             let target = std::sync::Arc::clone(&store);
             let store_port = listen.port();
+            let marker = std::path::Path::new(&args.store_root).join(".raft-initialized");
+            let initialize = !marker.exists();
             let applier: mq_raft::Applier = std::sync::Arc::new(move |cmd| {
                 tracing::debug!(msg_id = %cmd.msg_id, "raft apply start");
                 if let Err(err) = target.append(stored_from_command(cmd, store_port)) {
                     tracing::warn!(%err, "raft apply failed");
                 }
             });
-            let raft =
-                mq_raft::MessageRaft::start_with_applier(args.raft_id, listen_addr, peers, applier)
-                    .await?;
+            let raft = mq_raft::MessageRaft::start_with_applier(
+                args.raft_id,
+                listen_addr,
+                peers,
+                applier,
+                initialize,
+            )
+            .await?;
+            if initialize {
+                let _ = std::fs::write(&marker, b"1");
+            }
             Some(std::sync::Arc::new(raft))
         }
         _ => None,

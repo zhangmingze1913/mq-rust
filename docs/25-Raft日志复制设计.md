@@ -1,6 +1,6 @@
 # Raft 消息日志复制设计（1.0 剩余硬项）
 
-> 状态：3 broker Raft SEND/Pull、leader 切换与自动路由已通过（R175–R178）；持久化、BATCH、重启追平未完成。生产默认仍是 quorum 复制。
+> 状态：3 broker Raft SEND/BATCH、leader 切换、自动路由、follower 重启追平均已通过（R175–R180）；Raft 日志持久化与 leader/全集群重启未完成。
 
 ---
 

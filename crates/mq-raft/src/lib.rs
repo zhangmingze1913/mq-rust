@@ -356,7 +356,7 @@ impl MessageRaft {
         peers: Vec<(u64, String)>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (sm, messages) = MessageSM::new();
-        Self::start_with_sm(node_id, listen, peers, sm, messages).await
+        Self::start_with_sm(node_id, listen, peers, sm, messages, true).await
     }
 
     pub async fn start_with_applier(
@@ -364,9 +364,10 @@ impl MessageRaft {
         listen: &str,
         peers: Vec<(u64, String)>,
         applier: Applier,
+        initialize: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (sm, messages) = MessageSM::new_with_applier(applier);
-        Self::start_with_sm(node_id, listen, peers, sm, messages).await
+        Self::start_with_sm(node_id, listen, peers, sm, messages, initialize).await
     }
 
     async fn start_with_sm(
@@ -375,6 +376,7 @@ impl MessageRaft {
         peers: Vec<(u64, String)>,
         sm: MessageSM,
         messages: Messages,
+        initialize: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let listener = TcpListener::bind(listen).await?;
         let peer_map: HashMap<u64, String> = peers.iter().cloned().collect();
@@ -404,7 +406,9 @@ impl MessageRaft {
         for (id, _) in &peers {
             members.insert(*id, ());
         }
-        let _ = raft.initialize(members).await;
+        if initialize {
+            let _ = raft.initialize(members).await;
+        }
         Ok(Self {
             node_id,
             raft,
