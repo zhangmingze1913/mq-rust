@@ -87,9 +87,13 @@ pub struct MessageSM {
 #[derive(Serialize, Deserialize)]
 struct SnapshotFile {
     messages: Vec<MessageCommand>,
+    #[serde(default)]
+    total_messages: usize,
     applied: Option<LogIdOf<TypeConfig>>,
     membership: StoredMembershipOf<TypeConfig>,
 }
+
+const SNAPSHOT_TAIL_MESSAGES: usize = 1000;
 
 impl Default for MessageSM {
     fn default() -> Self {
@@ -176,6 +180,7 @@ impl MessageSM {
     fn persist_snapshot(
         &self,
         messages: &[MessageCommand],
+        total_messages: usize,
         applied: Option<LogIdOf<TypeConfig>>,
         membership: &StoredMembershipOf<TypeConfig>,
     ) {
@@ -184,6 +189,7 @@ impl MessageSM {
         };
         let file = SnapshotFile {
             messages: messages.to_vec(),
+            total_messages,
             applied,
             membership: membership.clone(),
         };
@@ -272,7 +278,12 @@ impl RaftStateMachine<TypeConfig> for MessageSM {
         *self.messages.write().await = restored.clone();
         *self.applied.write().await = meta.last_log_id;
         *self.membership.write().await = meta.last_membership.clone();
-        self.persist_snapshot(&restored, meta.last_log_id, &meta.last_membership);
+        self.persist_snapshot(
+            &restored,
+            restored.len(),
+            meta.last_log_id,
+            &meta.last_membership,
+        );
         Ok(())
     }
 
@@ -289,7 +300,15 @@ impl RaftSnapshotBuilder<TypeConfig> for MessageSM {
     async fn build_snapshot(
         &mut self,
     ) -> Result<SnapshotOf<TypeConfig, Self::SnapshotData>, io::Error> {
-        let messages = self.messages.read().await.clone();
+        let all = self.messages.read().await;
+        let total = all.len();
+        let messages: Vec<_> = all
+            .iter()
+            .rev()
+            .take(SNAPSHOT_TAIL_MESSAGES)
+            .rev()
+            .cloned()
+            .collect();
         let body = serde_json::to_vec(&messages)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
         let meta = SnapshotMetaOf::<TypeConfig> {
@@ -303,7 +322,7 @@ impl RaftSnapshotBuilder<TypeConfig> for MessageSM {
         *self.current.write().await = Some(snapshot.clone());
         let applied = *self.applied.read().await;
         let membership = self.membership.read().await.clone();
-        self.persist_snapshot(&messages, applied, &membership);
+        self.persist_snapshot(&messages, total, applied, &membership);
         Ok(snapshot)
     }
 }
@@ -676,6 +695,37 @@ mod tests {
     async fn free_port() -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         listener.local_addr().unwrap().port()
+    }
+
+    #[tokio::test]
+    async fn snapshot_tail_is_bounded() {
+        let path =
+            std::env::temp_dir().join(format!("mq-raft-snapshot-tail-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let applier: Applier = Arc::new(|_| {});
+        let (mut sm, messages) = MessageSM::new_with_applier_and_snapshot(applier.clone(), &path);
+        {
+            let mut guard = messages.write().await;
+            for index in 0..1500 {
+                guard.push(MessageCommand {
+                    topic: "snap".into(),
+                    queue_id: 0,
+                    msg_id: format!("s{index}"),
+                    body: b"x".to_vec(),
+                    properties: String::new(),
+                    deliver_at_ms: None,
+                    tx_id: None,
+                    tx_kind: None,
+                });
+            }
+        }
+        sm.build_snapshot().await.unwrap();
+        drop(sm);
+        let (_sm2, messages2) = MessageSM::new_with_applier_and_snapshot(applier, &path);
+        let restored = messages2.read().await;
+        assert_eq!(restored.len(), SNAPSHOT_TAIL_MESSAGES);
+        assert_eq!(restored.last().unwrap().msg_id, "s1499");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]
