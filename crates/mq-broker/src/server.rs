@@ -675,7 +675,24 @@ async fn handle_command(
                     body: batch_msg.body,
                     properties: batch_msg.properties,
                 };
-                let saved = config.store.append(msg)?;
+                let saved = if let Some(raft) = &config.raft {
+                    if !raft.is_leader() {
+                        return Err(MqError::Store("not raft leader".into()));
+                    }
+                    let command = mq_raft::MessageCommand {
+                        topic: msg.topic.clone(),
+                        queue_id: msg.queue_id,
+                        msg_id: msg.msg_id.clone(),
+                        body: msg.body.to_vec(),
+                        properties: msg.properties.clone(),
+                    };
+                    raft.write(command).await.map_err(MqError::Store)?;
+                    config.store.message_by_id(&msg.msg_id).ok_or_else(|| {
+                        MqError::Store("raft applied batch message not found".into())
+                    })?
+                } else {
+                    config.store.append(msg)?
+                };
                 config.trace.record(
                     "send",
                     &saved.topic,
