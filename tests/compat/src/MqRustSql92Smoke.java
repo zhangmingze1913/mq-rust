@@ -33,6 +33,8 @@ public class MqRustSql92Smoke {
         consumer.setNamesrvAddr(namesrv);
         consumer.setVipChannelEnabled(false);
         consumer.start();
+        // PullAPIWrapper checks brokerVersionTable filled by heartbeat; wait for the first one.
+        Thread.sleep(3000);
         Set<MessageQueue> queues = consumer.fetchSubscribeMessageQueues(topic);
         int count = 0;
         for (MessageQueue mq : queues) {
