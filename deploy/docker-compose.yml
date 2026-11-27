@@ -1,7 +1,7 @@
-# MQ-rust + RocketMQ + Prometheus + Grafana 本地栈
-# 用法（需 Docker Desktop / Linux Docker）：
+﻿# MQ-rust + RocketMQ + Prometheus + Grafana 鏈湴鏍?
+# 鐢ㄦ硶锛堥渶 Docker Desktop / Linux Docker锛夛細
 #   docker compose -f deploy/docker-compose.yml up -d --build
-# 说明：MQ-rust 容器与原生 RocketMQ 容器并行，端口已错开。
+# 璇存槑锛歁Q-rust 瀹瑰櫒涓庡師鐢?RocketMQ 瀹瑰櫒骞惰锛岀鍙ｅ凡閿欏紑銆?
 services:
   namesrv:
     image: apache/rocketmq:5.3.4
@@ -159,7 +159,7 @@ services:
     networks: [mqnet]
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:10.4.2
     environment:
       GF_SECURITY_ADMIN_PASSWORD: admin
     ports:
