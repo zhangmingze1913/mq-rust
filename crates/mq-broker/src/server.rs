@@ -49,6 +49,7 @@ pub struct BrokerConfig {
     pub tls_cert: Option<String>,
     pub tls_key: Option<String>,
     pub tls_client_ca: Option<String>,
+    pub tls_reload_ms: u64,
     pub raft: Option<Arc<mq_raft::MessageRaft>>,
 }
 
@@ -90,8 +91,28 @@ pub async fn reconcile_once(
 }
 
 pub async fn run(config: BrokerConfig) -> std::io::Result<()> {
+    let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
     let listener = TcpListener::bind(config.listen).await?;
-    let tls_acceptor = build_tls_acceptor(&config)?;
+    let tls_state = Arc::new(std::sync::RwLock::new(build_tls_acceptor(&config)?));
+    if config.tls_reload_ms > 0 {
+        if let (Some(cert), Some(key)) = (config.tls_cert.clone(), config.tls_key.clone()) {
+            let state = Arc::clone(&tls_state);
+            let ca = config.tls_client_ca.clone();
+            let interval = config.tls_reload_ms.max(500);
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_millis(interval));
+                match build_tls_acceptor_paths(&cert, &key, ca.as_deref()) {
+                    Ok(acceptor) => {
+                        if let Ok(mut guard) = state.write() {
+                            *guard = Some(acceptor);
+                            tracing::info!("tls certificate reloaded");
+                        }
+                    }
+                    Err(err) => tracing::warn!(%err, "tls certificate reload failed"),
+                }
+            });
+        }
+    }
     let config = Arc::new(config);
     if let (Some(tc), true) = (config.tc_client.clone(), config.tc_reconcile_ms > 0) {
         let store = Arc::clone(&config.store);
@@ -111,7 +132,7 @@ pub async fn run(config: BrokerConfig) -> std::io::Result<()> {
     loop {
         let (stream, peer) = listener.accept().await?;
         let config = Arc::clone(&config);
-        let tls = tls_acceptor.clone();
+        let tls = tls_state.read().ok().and_then(|guard| guard.clone());
         tokio::spawn(async move {
             let result = if let Some(acceptor) = tls {
                 match acceptor.accept(stream).await {
@@ -235,6 +256,14 @@ fn build_tls_acceptor(config: &BrokerConfig) -> std::io::Result<Option<tokio_rus
     let (Some(cert), Some(key)) = (&config.tls_cert, &config.tls_key) else {
         return Ok(None);
     };
+    build_tls_acceptor_paths(cert, key, config.tls_client_ca.as_deref()).map(Some)
+}
+
+fn build_tls_acceptor_paths(
+    cert: &str,
+    key: &str,
+    client_ca: Option<&str>,
+) -> std::io::Result<tokio_rustls::TlsAcceptor> {
     let mut cert_reader = std::io::BufReader::new(std::fs::File::open(cert)?);
     let certs = rustls_pemfile::certs(&mut cert_reader)
         .collect::<Result<Vec<_>, _>>()
@@ -246,7 +275,7 @@ fn build_tls_acceptor(config: &BrokerConfig) -> std::io::Result<Option<tokio_rus
             std::io::Error::new(std::io::ErrorKind::InvalidData, "missing private key")
         })?;
     let builder = tokio_rustls::rustls::ServerConfig::builder();
-    let builder = if let Some(ca) = &config.tls_client_ca {
+    let builder = if let Some(ca) = client_ca {
         let mut ca_reader = std::io::BufReader::new(std::fs::File::open(ca)?);
         let mut roots = tokio_rustls::rustls::RootCertStore::empty();
         for cert in rustls_pemfile::certs(&mut ca_reader) {
@@ -264,7 +293,7 @@ fn build_tls_acceptor(config: &BrokerConfig) -> std::io::Result<Option<tokio_rus
     let server = builder
         .with_single_cert(certs, key)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    Ok(Some(tokio_rustls::TlsAcceptor::from(Arc::new(server))))
+    Ok(tokio_rustls::TlsAcceptor::from(Arc::new(server)))
 }
 
 async fn handle_connection<S>(
