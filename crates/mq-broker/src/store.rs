@@ -347,7 +347,7 @@ impl BrokerStore {
         let index_records = index_log.scan()?;
         let mut offset_log = CommitLog::open_with_segment(root.join("offsets"), segment_bytes)?;
         let offset_records = offset_log.scan()?;
-        let store = Self {
+        let mut store = Self {
             topics: RwLock::new(HashMap::new()),
             offsets: RwLock::new(HashMap::new()),
             offset_log: Some(Mutex::new(offset_log)),
@@ -463,7 +463,91 @@ impl BrokerStore {
         store.load_retention();
         store.load_admin_meta();
         store.repair_cq()?;
+        if std::env::var("MQ_COMPACT_COMMITLOG").as_deref() == Ok("1") {
+            store.compact_commitlogs_exact()?;
+            store.repair_cq_force()?;
+        }
         Ok(store)
+    }
+
+    fn repair_cq_force(&self) -> Result<()> {
+        if let Some(root) = &self.cq_root {
+            let _ = std::fs::remove_dir_all(root.join("cq"));
+        }
+        self.cq.write().unwrap().clear();
+        self.repair_cq()
+    }
+
+    fn compact_commitlogs_exact(&mut self) -> Result<()> {
+        if self.writer.is_some() || self.logs.is_empty() {
+            tracing::warn!("exact commitlog compaction requires non-group writer");
+            return Ok(());
+        }
+        let root = self
+            .cq_root
+            .clone()
+            .ok_or_else(|| MqError::Store("missing store root".into()))?;
+        let mut per_shard: Vec<Vec<StoredMessage>> = vec![Vec::new(); self.shards];
+        let topics: Vec<_> = self
+            .topics
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::clone(v)))
+            .collect();
+        for (_, state) in &topics {
+            let state = state.read().unwrap();
+            for (queue_id, queue) in state.queues.iter().enumerate() {
+                for msg in &queue.read().unwrap().messages {
+                    let shard = (queue_id as i32).rem_euclid(self.shards as i32) as usize;
+                    per_shard[shard].push(msg.clone());
+                }
+            }
+        }
+        let mut offsets = std::collections::HashMap::new();
+        for (shard, mut messages) in per_shard.into_iter().enumerate() {
+            messages.sort_by_key(|msg| msg.physical_offset);
+            let path = root.join(format!("commitlog-{shard}"));
+            let tmp = root.join(format!("commitlog-{shard}.compact"));
+            let _ = std::fs::remove_file(&tmp);
+            let _ = std::fs::remove_file(tmp.with_extension("compact.1"));
+            let mut log = CommitLog::open_with_segment(&tmp, 256 * 1024 * 1024)?;
+            for msg in &messages {
+                let payload = msg.encode();
+                let appended = log.append(&payload)?;
+                offsets.insert(
+                    (msg.topic.clone(), msg.msg_id.clone()),
+                    appended.physical_offset as i64,
+                );
+            }
+            drop(log);
+            let prefix = format!("commitlog-{shard}");
+            for entry in std::fs::read_dir(&root)? {
+                let entry = entry?;
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name == prefix
+                    || (name.starts_with(&format!("{prefix}."))
+                        && !name.starts_with(&format!("{prefix}.compact")))
+                {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+            std::fs::rename(&tmp, &path)?;
+            let reopened = CommitLog::open_with_segment(&path, 256 * 1024 * 1024)?;
+            self.logs[shard] = Mutex::new(reopened);
+        }
+        for (_, state) in &topics {
+            let state = state.read().unwrap();
+            for queue in &state.queues {
+                let mut queue = queue.write().unwrap();
+                for msg in &mut queue.messages {
+                    if let Some(offset) = offsets.get(&(msg.topic.clone(), msg.msg_id.clone())) {
+                        msg.physical_offset = *offset;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn queue_nums(&self) -> i32 {
@@ -2348,6 +2432,33 @@ mod tests {
         store.update_offset("g1", "orders", 0, 5);
         assert_eq!(store.query_offset("g1", "orders", 0), 5);
         assert_eq!(store.query_offset("g2", "orders", 0), 0);
+    }
+
+    #[test]
+    fn exact_commitlog_compaction_keeps_survivors_readable() {
+        let dir = std::env::temp_dir().join(format!(
+            "mq-rust-compact-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut store = BrokerStore::open(&dir, 8).unwrap();
+        for index in 0..4 {
+            let mut msg = sample("compact", 0);
+            msg.msg_id = format!("c{index}");
+            store.append(msg).unwrap();
+        }
+        store.retain(1, 0, 0).unwrap();
+        store.compact_commitlogs_exact().unwrap();
+        store.repair_cq_force().unwrap();
+        let (msgs, _, _) = store.read("compact", 0, 0, 10).unwrap();
+        assert_eq!(msgs.len(), 1);
+        let path = dir.join("commitlog-0");
+        assert!(std::fs::metadata(path).unwrap().len() < 4096);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
