@@ -811,7 +811,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        let leader = leader.expect("leader elected");
+        let _leader = leader.expect("leader elected");
         let cmd = MessageCommand {
             topic: "raft-test".into(),
             queue_id: 0,
@@ -822,10 +822,18 @@ mod tests {
             tx_id: None,
             tx_kind: None,
         };
-        nodes[(leader - 1) as usize]
-            .write(cmd.clone())
-            .await
-            .unwrap();
+        let mut wrote = false;
+        for _ in 0..100 {
+            let current = nodes.iter().position(|node| node.is_leader());
+            if let Some(index) = current {
+                if nodes[index].write(cmd.clone()).await.is_ok() {
+                    wrote = true;
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(wrote, "leader accepted write");
         tokio::time::sleep(Duration::from_millis(400)).await;
         for node in &nodes {
             assert_eq!(node.messages().await, vec![cmd.clone()]);
