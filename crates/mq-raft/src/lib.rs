@@ -326,13 +326,17 @@ impl RaftSnapshotBuilder<TypeConfig> for MessageSM {
     ) -> Result<SnapshotOf<TypeConfig, Self::SnapshotData>, io::Error> {
         let all = self.messages.read().await;
         let total = all.len();
-        let messages: Vec<_> = all
-            .iter()
-            .rev()
-            .take(SNAPSHOT_TAIL_MESSAGES)
-            .rev()
-            .cloned()
-            .collect();
+        let full = std::env::var("MQ_SNAPSHOT_FULL").as_deref() == Ok("1");
+        let messages: Vec<_> = if full {
+            all.clone()
+        } else {
+            all.iter()
+                .rev()
+                .take(SNAPSHOT_TAIL_MESSAGES)
+                .rev()
+                .cloned()
+                .collect()
+        };
         let body = serde_json::to_vec(&messages)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
         let meta = SnapshotMetaOf::<TypeConfig> {
@@ -721,6 +725,37 @@ mod tests {
     async fn free_port() -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         listener.local_addr().unwrap().port()
+    }
+
+    #[tokio::test]
+    async fn snapshot_full_mode_keeps_all_messages() {
+        let path =
+            std::env::temp_dir().join(format!("mq-raft-snapshot-full-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        std::env::set_var("MQ_SNAPSHOT_FULL", "1");
+        let applier: Applier = Arc::new(|_| {});
+        let (mut sm, messages) = MessageSM::new_with_applier_and_snapshot(applier.clone(), &path);
+        {
+            let mut guard = messages.write().await;
+            for index in 0..1500 {
+                guard.push(MessageCommand {
+                    topic: "snap".into(),
+                    queue_id: 0,
+                    msg_id: format!("f{index}"),
+                    body: b"x".to_vec(),
+                    properties: String::new(),
+                    deliver_at_ms: None,
+                    tx_id: None,
+                    tx_kind: None,
+                });
+            }
+        }
+        sm.build_snapshot().await.unwrap();
+        drop(sm);
+        let (_sm2, messages2) = MessageSM::new_with_applier_and_snapshot(applier, &path);
+        assert_eq!(messages2.read().await.len(), 1500);
+        std::env::remove_var("MQ_SNAPSHOT_FULL");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]
