@@ -150,22 +150,26 @@ spec:
               port: 9091
             initialDelaySeconds: 5
             periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 5
           livenessProbe:
             httpGet:
               path: /health
               port: 9091
             initialDelaySeconds: 15
             periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 5
           volumeMounts:
             - name: data
               mountPath: /data
           resources:
             requests:
               cpu: 200m
-              memory: 256Mi
+              memory: 384Mi
             limits:
               cpu: "1"
-              memory: 1Gi
+              memory: 1536Mi
   volumeClaimTemplates:
     - metadata:
         name: data
