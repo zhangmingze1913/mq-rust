@@ -294,6 +294,21 @@ async fn handle(
             "200 OK",
             serde_json::to_string(&store.pending_half()).unwrap_or_else(|_| "[]".to_string()),
         )
+    } else if path == "/compact" {
+        if method != "POST" {
+            (
+                "405 Method Not Allowed",
+                "{\"error\":\"POST required\"}".to_string(),
+            )
+        } else {
+            match store.compact_now() {
+                Ok(()) => ("200 OK", "{\"compacted\":true}".to_string()),
+                Err(err) => (
+                    "500 Internal Server Error",
+                    serde_json::json!({"error": err.to_string()}).to_string(),
+                ),
+            }
+        }
     } else if path.starts_with("/health") {
         ("200 OK", "ok".to_string())
     } else {

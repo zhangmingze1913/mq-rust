@@ -347,7 +347,7 @@ impl BrokerStore {
         let index_records = index_log.scan()?;
         let mut offset_log = CommitLog::open_with_segment(root.join("offsets"), segment_bytes)?;
         let offset_records = offset_log.scan()?;
-        let mut store = Self {
+        let store = Self {
             topics: RwLock::new(HashMap::new()),
             offsets: RwLock::new(HashMap::new()),
             offset_log: Some(Mutex::new(offset_log)),
@@ -470,6 +470,11 @@ impl BrokerStore {
         Ok(store)
     }
 
+    pub fn compact_now(&self) -> Result<()> {
+        self.compact_commitlogs_exact()?;
+        self.repair_cq_force()
+    }
+
     fn repair_cq_force(&self) -> Result<()> {
         if let Some(root) = &self.cq_root {
             let _ = std::fs::remove_dir_all(root.join("cq"));
@@ -478,7 +483,7 @@ impl BrokerStore {
         self.repair_cq()
     }
 
-    fn compact_commitlogs_exact(&mut self) -> Result<()> {
+    fn compact_commitlogs_exact(&self) -> Result<()> {
         if self.writer.is_some() || self.logs.is_empty() {
             tracing::warn!("exact commitlog compaction requires non-group writer");
             return Ok(());
@@ -534,7 +539,7 @@ impl BrokerStore {
             }
             std::fs::rename(&tmp, &path)?;
             let reopened = CommitLog::open_with_segment(&path, 256 * 1024 * 1024)?;
-            self.logs[shard] = Mutex::new(reopened);
+            *self.logs[shard].lock().unwrap() = reopened;
         }
         for (_, state) in &topics {
             let state = state.read().unwrap();
@@ -2445,7 +2450,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut store = BrokerStore::open(&dir, 8).unwrap();
+        let store = BrokerStore::open(&dir, 8).unwrap();
         for index in 0..4 {
             let mut msg = sample("compact", 0);
             msg.msg_id = format!("c{index}");
