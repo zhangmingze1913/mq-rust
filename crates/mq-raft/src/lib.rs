@@ -82,6 +82,7 @@ pub struct MessageSM {
     membership: Arc<RwLock<StoredMembershipOf<TypeConfig>>>,
     current: CurrentSnapshot,
     snapshot_path: Option<Arc<PathBuf>>,
+    applied_path: Option<Arc<PathBuf>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -105,6 +106,7 @@ impl Default for MessageSM {
             membership: Arc::new(RwLock::new(StoredMembershipOf::<TypeConfig>::default())),
             current: Arc::new(RwLock::new(None)),
             snapshot_path: None,
+            applied_path: None,
         }
     }
 }
@@ -138,21 +140,27 @@ impl MessageSM {
         snapshot_path: impl Into<PathBuf>,
     ) -> (Self, Messages) {
         let path = snapshot_path.into();
+        let applied_path = path.with_extension("applied");
+        let applied_loaded = std::fs::read(&applied_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Option<LogIdOf<TypeConfig>>>(&bytes).ok())
+            .flatten();
         let loaded = std::fs::read(&path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<SnapshotFile>(&bytes).ok());
-        let (messages, applied, membership) = match loaded {
+        let (messages, applied_value, membership) = match loaded {
             Some(snapshot) => (
                 Arc::new(RwLock::new(snapshot.messages)),
-                Arc::new(RwLock::new(snapshot.applied)),
+                applied_loaded.or(snapshot.applied),
                 Arc::new(RwLock::new(snapshot.membership)),
             ),
             None => (
                 Arc::new(RwLock::new(Vec::new())),
-                Arc::new(RwLock::new(None)),
+                applied_loaded,
                 Arc::new(RwLock::new(StoredMembershipOf::<TypeConfig>::default())),
             ),
         };
+        let applied = Arc::new(RwLock::new(applied_value));
         (
             Self {
                 messages: Arc::clone(&messages),
@@ -162,6 +170,7 @@ impl MessageSM {
                 membership,
                 current: Arc::new(RwLock::new(None)),
                 snapshot_path: Some(Arc::new(path)),
+                applied_path: Some(Arc::new(applied_path)),
             },
             messages,
         )
@@ -175,6 +184,19 @@ impl MessageSM {
         let (mut sm, messages) = Self::new_with_applier_and_snapshot(applier, snapshot_path);
         sm.batch_applier = Some(batch_applier);
         (sm, messages)
+    }
+
+    fn persist_applied(&self, log_id: Option<LogIdOf<TypeConfig>>) {
+        let Some(path) = &self.applied_path else {
+            return;
+        };
+        let Ok(bytes) = serde_json::to_vec(&log_id) else {
+            return;
+        };
+        let tmp = path.with_extension("applied.tmp");
+        if std::fs::write(&tmp, bytes).is_ok() {
+            let _ = std::fs::rename(&tmp, &**path);
+        }
     }
 
     fn persist_snapshot(
@@ -224,6 +246,7 @@ impl RaftStateMachine<TypeConfig> for MessageSM {
     {
         while let Some((entry, responder)) = entries.try_next().await? {
             *self.applied.write().await = Some(entry.log_id);
+            self.persist_applied(Some(entry.log_id));
             let response = match entry.payload {
                 EntryPayload::Blank => ClientResponse(None),
                 EntryPayload::Normal(ref data) => {
@@ -277,6 +300,7 @@ impl RaftStateMachine<TypeConfig> for MessageSM {
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
         *self.messages.write().await = restored.clone();
         *self.applied.write().await = meta.last_log_id;
+        self.persist_applied(meta.last_log_id);
         *self.membership.write().await = meta.last_membership.clone();
         self.persist_snapshot(
             &restored,
