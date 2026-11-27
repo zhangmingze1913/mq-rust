@@ -3,7 +3,7 @@
 > Rust 实现的分布式事务消息中间件，兼容 Apache RocketMQ 4.9.x Remoting 协议与 Java SDK。
 > 面向电商/金融等对“低延迟、高可靠、可审计、最终一致”有要求的场景。
 
-- **当前阶段**：R1–R240 完成；group-writer 在线压缩
+- **当前阶段**：R1–R241 完成；K8s 4 broker
 - **测试**：92 项 Rust 测试通过；RocketMQ 4.9.8 Java SDK 全量回归通过
 - **性能**：单条 100k 长跑 **9,347 TPS**；1M 长跑 **8,438 TPS/0 失败**；批量 64 条 **24,982 msg/s**；消费 20 线程 **11,130 TPS**
 - **目标**：兼容 RocketMQ 协议/SDK 的单机事务消息中间件 + TC Raft 集群
@@ -309,9 +309,10 @@ Producer/Consumer (RocketMQ Java SDK)
 | [R238-5.3.4 SDK](docs/rounds/R238-sdk534.md) | 15/15 |
 | [R239-Docker/Grafana](docs/rounds/R239-docker-grafana.md) | 15/15 + UI |
 | [R240-group 压缩](docs/rounds/R240-group-writer-compact.md) | writer 路径 |
+| [R241-K8s 4 broker](docs/rounds/R241-k8s-4broker.md) | 15/15 四副本 |
 | [图表索引](docs/图表索引.md) | PNG/PlantUML |
 
-分阶段报告：`docs/rounds/R01.md` … `R240-group-writer-compact.md`（R174/R185/R189/R200/R203/R206/R214/R215/R219/R221/R230/R231/R234 为负结果）；剩余规划见 [28-剩余规划-排除5万](docs/28-剩余规划-排除5万.md)；1.0 剩余计划见 [22-1.0剩余工作计划](docs/22-1.0剩余工作计划.md)，接手见 [23-交付交接](docs/23-交付交接.md)；最终验收见 [16-最终验收报告](docs/16-最终验收报告.md)，交付说明见 [21-最终交付说明](docs/21-最终交付说明.md)，交付索引见 [20-交付索引](docs/20-交付索引.md)。
+分阶段报告：`docs/rounds/R01.md` … `R241-k8s-4broker.md`（R174/R185/R189/R200/R203/R206/R214/R215/R219/R221/R230/R231/R234 为负结果）；剩余规划见 [28-剩余规划-排除5万](docs/28-剩余规划-排除5万.md)；1.0 剩余计划见 [22-1.0剩余工作计划](docs/22-1.0剩余工作计划.md)，接手见 [23-交付交接](docs/23-交付交接.md)；最终验收见 [16-最终验收报告](docs/16-最终验收报告.md)，交付说明见 [21-最终交付说明](docs/21-最终交付说明.md)，交付索引见 [20-交付索引](docs/20-交付索引.md)。
 
 Windows 分发包：[mq-rust-0.9.0-rc.1-win64.zip](dist/mq-rust-0.9.0-rc.1-win64.zip)。
 
