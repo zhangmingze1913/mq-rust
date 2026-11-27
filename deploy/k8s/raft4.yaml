@@ -38,6 +38,9 @@ spec:
         - name: namesrv
           image: mq-rust:latest
           imagePullPolicy: IfNotPresent
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN"]
           command:
             - /usr/local/bin/mq-namesrv
             - --listen
@@ -115,6 +118,9 @@ spec:
         - name: broker
           image: mq-rust:latest
           imagePullPolicy: IfNotPresent
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN"]
           command:
             - /bin/sh
             - -c
