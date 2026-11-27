@@ -43,8 +43,8 @@ if (-not (Test-Path $zip)) {
     }
 }
 
-if ($readme -notmatch "R221") { $errors.Add("README does not mention R221") }
-if ($doc20 -notmatch "R221") { $errors.Add("20 does not mention R221") }
+if ($readme -notmatch "R222") { $errors.Add("README does not mention R222") }
+if ($doc20 -notmatch "R222") { $errors.Add("20 does not mention R222") }
 
 $mdFiles = @(Get-ChildItem (Join-Path $Root "docs") -Recurse -Filter *.md)
 $mdFiles += Get-Item (Join-Path $Root "README.md")
