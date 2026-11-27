@@ -82,8 +82,19 @@ pub struct MessageSM {
     membership: Arc<RwLock<StoredMembershipOf<TypeConfig>>>,
     current: CurrentSnapshot,
     snapshot_path: Option<Arc<PathBuf>>,
+    delta_path: Option<Arc<PathBuf>>,
+    meta_path: Option<Arc<PathBuf>>,
+    snapshot_base_count: Arc<std::sync::atomic::AtomicUsize>,
     applied_path: Option<Arc<PathBuf>>,
     applied_persist_ms: Arc<std::sync::atomic::AtomicU64>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct SnapshotMetaFile {
+    applied: Option<LogIdOf<TypeConfig>>,
+    membership: StoredMembershipOf<TypeConfig>,
+    base_count: usize,
+    total: usize,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -107,6 +118,9 @@ impl Default for MessageSM {
             membership: Arc::new(RwLock::new(StoredMembershipOf::<TypeConfig>::default())),
             current: Arc::new(RwLock::new(None)),
             snapshot_path: None,
+            delta_path: None,
+            meta_path: None,
+            snapshot_base_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             applied_path: None,
             applied_persist_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
@@ -143,9 +157,22 @@ impl MessageSM {
     ) -> (Self, Messages) {
         let path = snapshot_path.into();
         let applied_path = path.with_extension("applied");
+        let delta_path = path.with_extension("snapshot.delta");
+        let meta_path = path.with_extension("snapshot.meta");
         let loaded = std::fs::read(&path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<SnapshotFile>(&bytes).ok());
+        let meta_loaded = std::fs::read(&meta_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<SnapshotMetaFile>(&bytes).ok());
+        let delta_loaded: Vec<MessageCommand> = if meta_loaded.is_some() {
+            std::fs::read(&delta_path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Vec<MessageCommand>>(&bytes).ok())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let applied_loaded = if loaded.is_some() {
             std::fs::read(&applied_path)
                 .ok()
@@ -156,16 +183,36 @@ impl MessageSM {
         } else {
             None
         };
-        let (messages, applied_value, membership) = match loaded {
-            Some(snapshot) => (
-                Arc::new(RwLock::new(snapshot.messages)),
-                applied_loaded.or(snapshot.applied),
-                Arc::new(RwLock::new(snapshot.membership)),
-            ),
+        let (messages, applied_value, membership, base_count) = match loaded {
+            Some(snapshot) => {
+                let SnapshotFile {
+                    messages: mut base_messages,
+                    total_messages: base_count,
+                    applied: base_applied,
+                    membership: base_membership,
+                } = snapshot;
+                let is_full_base = base_messages.len() == base_count;
+                if is_full_base {
+                    base_messages.extend(delta_loaded);
+                }
+                let meta = meta_loaded.clone();
+                (
+                    Arc::new(RwLock::new(base_messages)),
+                    meta.as_ref()
+                        .and_then(|m| m.applied)
+                        .or(applied_loaded)
+                        .or(base_applied),
+                    Arc::new(RwLock::new(
+                        meta.map(|m| m.membership).unwrap_or(base_membership),
+                    )),
+                    base_count,
+                )
+            }
             None => (
                 Arc::new(RwLock::new(Vec::new())),
                 applied_loaded,
                 Arc::new(RwLock::new(StoredMembershipOf::<TypeConfig>::default())),
+                0,
             ),
         };
         let applied = Arc::new(RwLock::new(applied_value));
@@ -178,6 +225,9 @@ impl MessageSM {
                 membership,
                 current: Arc::new(RwLock::new(None)),
                 snapshot_path: Some(Arc::new(path)),
+                delta_path: Some(Arc::new(delta_path)),
+                meta_path: Some(Arc::new(meta_path)),
+                snapshot_base_count: Arc::new(std::sync::atomic::AtomicUsize::new(base_count)),
                 applied_path: Some(Arc::new(applied_path)),
                 applied_persist_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             },
@@ -242,6 +292,43 @@ impl MessageSM {
         let tmp = path.with_extension("tmp");
         if std::fs::write(&tmp, bytes).is_ok() {
             let _ = std::fs::rename(&tmp, &**path);
+        }
+    }
+
+    fn persist_delta(
+        &self,
+        delta: &[MessageCommand],
+        applied: Option<LogIdOf<TypeConfig>>,
+        membership: &StoredMembershipOf<TypeConfig>,
+        base_count: usize,
+        total: usize,
+    ) {
+        let (Some(delta_path), Some(meta_path)) = (&self.delta_path, &self.meta_path) else {
+            return;
+        };
+        let Ok(delta_bytes) = serde_json::to_vec(delta) else {
+            return;
+        };
+        let meta = SnapshotMetaFile {
+            applied,
+            membership: membership.clone(),
+            base_count,
+            total,
+        };
+        let Ok(meta_bytes) = serde_json::to_vec(&meta) else {
+            return;
+        };
+        if std::fs::write(&**delta_path, delta_bytes).is_ok() {
+            let _ = std::fs::write(&**meta_path, meta_bytes);
+        }
+    }
+
+    fn clear_delta(&self) {
+        if let Some(path) = &self.delta_path {
+            let _ = std::fs::remove_file(&**path);
+        }
+        if let Some(path) = &self.meta_path {
+            let _ = std::fs::remove_file(&**path);
         }
     }
 }
@@ -329,6 +416,9 @@ impl RaftStateMachine<TypeConfig> for MessageSM {
             meta.last_log_id,
             &meta.last_membership,
         );
+        self.snapshot_base_count
+            .store(restored.len(), std::sync::atomic::Ordering::Relaxed);
+        self.clear_delta();
         Ok(())
     }
 
@@ -371,7 +461,26 @@ impl RaftSnapshotBuilder<TypeConfig> for MessageSM {
         *self.current.write().await = Some(snapshot.clone());
         let applied = *self.applied.read().await;
         let membership = self.membership.read().await.clone();
-        self.persist_snapshot(&messages, total, applied, &membership);
+        if full {
+            let base = self
+                .snapshot_base_count
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let should_rebase = base == 0 || total < base || total - base >= 1000;
+            if should_rebase {
+                self.persist_snapshot(&all, total, applied, &membership);
+                self.snapshot_base_count
+                    .store(total, std::sync::atomic::Ordering::Relaxed);
+                self.clear_delta();
+            } else if total > base {
+                let delta = all[base..].to_vec();
+                self.persist_delta(&delta, applied, &membership, base, total);
+            }
+        } else {
+            self.persist_snapshot(&messages, total, applied, &membership);
+            self.snapshot_base_count
+                .store(total, std::sync::atomic::Ordering::Relaxed);
+            self.clear_delta();
+        }
         Ok(snapshot)
     }
 }
@@ -875,6 +984,62 @@ mod tests {
         assert_eq!(messages2.read().await.len(), 1500);
         std::env::remove_var("MQ_SNAPSHOT_FULL");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn snapshot_full_delta_merges_on_reopen() {
+        let _env_lock = SNAPSHOT_ENV_LOCK.lock().unwrap();
+        std::env::set_var("MQ_SNAPSHOT_FULL", "1");
+        let path = std::env::temp_dir().join(format!(
+            "mq-raft-snapshot-delta-{}.json",
+            std::process::id()
+        ));
+        for suffix in ["", ".snapshot.delta", ".snapshot.meta"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+        }
+        let applier: Applier = Arc::new(|_| {});
+        let (mut sm, messages) = MessageSM::new_with_applier_and_snapshot(applier.clone(), &path);
+        {
+            let mut guard = messages.write().await;
+            for index in 0..1500 {
+                guard.push(MessageCommand {
+                    topic: "snapd".into(),
+                    queue_id: 0,
+                    msg_id: format!("b{index}"),
+                    body: b"x".to_vec(),
+                    properties: String::new(),
+                    deliver_at_ms: None,
+                    tx_id: None,
+                    tx_kind: None,
+                });
+            }
+        }
+        sm.build_snapshot().await.unwrap();
+        {
+            let mut guard = messages.write().await;
+            for index in 0..50 {
+                guard.push(MessageCommand {
+                    topic: "snapd".into(),
+                    queue_id: 0,
+                    msg_id: format!("d{index}"),
+                    body: b"y".to_vec(),
+                    properties: String::new(),
+                    deliver_at_ms: None,
+                    tx_id: None,
+                    tx_kind: None,
+                });
+            }
+        }
+        sm.build_snapshot().await.unwrap();
+        assert!(path.with_extension("snapshot.delta").exists());
+        drop(sm);
+        let (_sm2, messages2) = MessageSM::new_with_applier_and_snapshot(applier, &path);
+        assert_eq!(messages2.read().await.len(), 1550);
+        std::env::remove_var("MQ_SNAPSHOT_FULL");
+        for suffix in ["", ".snapshot.delta", ".snapshot.meta"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+        }
     }
 
     #[allow(clippy::await_holding_lock)]
