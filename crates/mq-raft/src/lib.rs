@@ -409,10 +409,12 @@ impl RaftNetworkV2<TypeConfig> for NetworkClient {
 }
 
 impl NetworkClient {
+    #[allow(deprecated)]
     async fn call(&self, req: &RpcRequest) -> Result<RpcResponse, String> {
         let mut stream = TcpStream::connect(&self.addr)
             .await
             .map_err(|e| format!("connect {}: {e}", self.addr))?;
+        let _ = stream.set_linger(Some(std::time::Duration::from_secs(0)));
         let payload = serde_json::to_vec(req).map_err(|e| e.to_string())?;
         stream
             .write_all(&(payload.len() as u32).to_be_bytes())
