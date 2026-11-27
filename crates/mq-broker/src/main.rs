@@ -45,6 +45,8 @@ struct Args {
     grpc_tls_key: Option<String>,
     #[arg(long)]
     grpc_tls_client_ca: Option<String>,
+    #[arg(long, default_value_t = 0)]
+    grpc_tls_reload_ms: u64,
     #[arg(long, default_value = "./data/audit.log")]
     audit_path: String,
     #[arg(long, default_value = "./data/inbox.log")]
@@ -616,6 +618,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 cert: cert.clone(),
                 key: key.clone(),
                 client_ca: args.grpc_tls_client_ca.clone(),
+                reload_ms: args.grpc_tls_reload_ms,
             }),
             _ => None,
         };
