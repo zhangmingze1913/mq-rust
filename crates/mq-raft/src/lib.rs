@@ -722,6 +722,8 @@ impl MessageRaft {
 mod tests {
     use super::*;
 
+    static SNAPSHOT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     async fn free_port() -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         listener.local_addr().unwrap().port()
@@ -729,6 +731,7 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_full_mode_keeps_all_messages() {
+        let _env_lock = SNAPSHOT_ENV_LOCK.lock().unwrap();
         let path =
             std::env::temp_dir().join(format!("mq-raft-snapshot-full-{}.json", std::process::id()));
         let _ = std::fs::remove_file(&path);
@@ -760,6 +763,7 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_tail_is_bounded() {
+        let _env_lock = SNAPSHOT_ENV_LOCK.lock().unwrap();
         let path =
             std::env::temp_dir().join(format!("mq-raft-snapshot-tail-{}.json", std::process::id()));
         let _ = std::fs::remove_file(&path);
