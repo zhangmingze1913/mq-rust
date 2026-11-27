@@ -83,6 +83,7 @@ pub struct MessageSM {
     current: CurrentSnapshot,
     snapshot_path: Option<Arc<PathBuf>>,
     applied_path: Option<Arc<PathBuf>>,
+    applied_persist_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -107,6 +108,7 @@ impl Default for MessageSM {
             current: Arc::new(RwLock::new(None)),
             snapshot_path: None,
             applied_path: None,
+            applied_persist_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 }
@@ -177,6 +179,7 @@ impl MessageSM {
                 current: Arc::new(RwLock::new(None)),
                 snapshot_path: Some(Arc::new(path)),
                 applied_path: Some(Arc::new(applied_path)),
+                applied_persist_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             },
             messages,
         )
@@ -192,10 +195,22 @@ impl MessageSM {
         (sm, messages)
     }
 
-    fn persist_applied(&self, log_id: Option<LogIdOf<TypeConfig>>) {
+    fn persist_applied(&self, log_id: Option<LogIdOf<TypeConfig>>, force: bool) {
         let Some(path) = &self.applied_path else {
             return;
         };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let last = self
+            .applied_persist_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if !force && log_id.is_some() && now.saturating_sub(last) < 500 {
+            return;
+        }
+        self.applied_persist_ms
+            .store(now, std::sync::atomic::Ordering::Relaxed);
         let Ok(bytes) = serde_json::to_vec(&log_id) else {
             return;
         };
@@ -252,7 +267,7 @@ impl RaftStateMachine<TypeConfig> for MessageSM {
     {
         while let Some((entry, responder)) = entries.try_next().await? {
             *self.applied.write().await = Some(entry.log_id);
-            self.persist_applied(Some(entry.log_id));
+            self.persist_applied(Some(entry.log_id), false);
             let response = match entry.payload {
                 EntryPayload::Blank => ClientResponse(None),
                 EntryPayload::Normal(ref data) => {
@@ -306,7 +321,7 @@ impl RaftStateMachine<TypeConfig> for MessageSM {
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
         *self.messages.write().await = restored.clone();
         *self.applied.write().await = meta.last_log_id;
-        self.persist_applied(meta.last_log_id);
+        self.persist_applied(meta.last_log_id, true);
         *self.membership.write().await = meta.last_membership.clone();
         self.persist_snapshot(
             &restored,
@@ -382,6 +397,7 @@ struct NetworkFactory {
 
 struct NetworkClient {
     addr: String,
+    conn: tokio::sync::Mutex<Option<TcpStream>>,
 }
 
 impl RaftNetworkFactory<TypeConfig> for NetworkFactory {
@@ -396,6 +412,7 @@ impl RaftNetworkFactory<TypeConfig> for NetworkFactory {
                 .get(&target)
                 .cloned()
                 .unwrap_or_default(),
+            conn: tokio::sync::Mutex::new(None),
         }
     }
 }
@@ -451,33 +468,46 @@ impl RaftNetworkV2<TypeConfig> for NetworkClient {
 }
 
 impl NetworkClient {
-    #[allow(deprecated)]
     async fn call(&self, req: &RpcRequest) -> Result<RpcResponse, String> {
+        let payload = serde_json::to_vec(req).map_err(|e| e.to_string())?;
+        let mut guard = self.conn.lock().await;
+        if guard.is_none() {
+            let stream = TcpStream::connect(&self.addr)
+                .await
+                .map_err(|e| format!("connect {}: {e}", self.addr))?;
+            *guard = Some(stream);
+        }
+        let first = exchange(guard.as_mut().unwrap(), &payload).await;
+        if first.is_ok() {
+            return first;
+        }
+        *guard = None;
         let mut stream = TcpStream::connect(&self.addr)
             .await
             .map_err(|e| format!("connect {}: {e}", self.addr))?;
-        let _ = stream.set_linger(Some(std::time::Duration::from_secs(0)));
-        let payload = serde_json::to_vec(req).map_err(|e| e.to_string())?;
-        stream
-            .write_all(&(payload.len() as u32).to_be_bytes())
-            .await
-            .map_err(|e| e.to_string())?;
-        stream
-            .write_all(&payload)
-            .await
-            .map_err(|e| e.to_string())?;
-        let mut len = [0u8; 4];
-        stream
-            .read_exact(&mut len)
-            .await
-            .map_err(|e| e.to_string())?;
-        let mut buf = vec![0u8; u32::from_be_bytes(len) as usize];
-        stream
-            .read_exact(&mut buf)
-            .await
-            .map_err(|e| e.to_string())?;
-        serde_json::from_slice(&buf).map_err(|e| e.to_string())
+        let result = exchange(&mut stream, &payload).await;
+        *guard = Some(stream);
+        result
     }
+}
+
+async fn exchange(stream: &mut TcpStream, payload: &[u8]) -> Result<RpcResponse, String> {
+    stream
+        .write_all(&(payload.len() as u32).to_be_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
+    stream.write_all(payload).await.map_err(|e| e.to_string())?;
+    let mut len = [0u8; 4];
+    stream
+        .read_exact(&mut len)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut buf = vec![0u8; u32::from_be_bytes(len) as usize];
+    stream
+        .read_exact(&mut buf)
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_slice(&buf).map_err(|e| e.to_string())
 }
 
 fn unreachable(msg: impl ToString) -> RPCError<TypeConfig> {
@@ -497,35 +527,40 @@ async fn serve(listener: TcpListener, raft: Raft) {
 }
 
 async fn handle(mut stream: TcpStream, raft: Raft) -> std::io::Result<()> {
-    let mut len = [0u8; 4];
-    stream.read_exact(&mut len).await?;
-    let mut buf = vec![0u8; u32::from_be_bytes(len) as usize];
-    stream.read_exact(&mut buf).await?;
-    let req: RpcRequest = serde_json::from_slice(&buf)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    let resp = match req {
-        RpcRequest::Append(req) => match raft.append_entries(req).await {
-            Ok(result) => RpcResponse::Append(AppendEntriesResponse::from(result)),
-            Err(e) => return Err(std::io::Error::other(e.to_string())),
-        },
-        RpcRequest::Vote(req) => match raft.vote(req).await {
-            Ok(v) => RpcResponse::Vote(v),
-            Err(e) => return Err(std::io::Error::other(e.to_string())),
-        },
-        RpcRequest::Forward(req) => RpcResponse::Forward(
-            raft.client_write(req)
-                .await
-                .map(|_| ())
-                .map_err(|e| e.to_string()),
-        ),
-    };
-    let payload = serde_json::to_vec(&resp)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    stream
-        .write_all(&(payload.len() as u32).to_be_bytes())
-        .await?;
-    stream.write_all(&payload).await?;
-    Ok(())
+    loop {
+        let mut len = [0u8; 4];
+        match stream.read_exact(&mut len).await {
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+            Err(err) => return Err(err),
+        }
+        let mut buf = vec![0u8; u32::from_be_bytes(len) as usize];
+        stream.read_exact(&mut buf).await?;
+        let req: RpcRequest = serde_json::from_slice(&buf)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let resp = match req {
+            RpcRequest::Append(req) => match raft.append_entries(req).await {
+                Ok(result) => RpcResponse::Append(AppendEntriesResponse::from(result)),
+                Err(e) => return Err(std::io::Error::other(e.to_string())),
+            },
+            RpcRequest::Vote(req) => match raft.vote(req).await {
+                Ok(v) => RpcResponse::Vote(v),
+                Err(e) => return Err(std::io::Error::other(e.to_string())),
+            },
+            RpcRequest::Forward(req) => RpcResponse::Forward(
+                raft.client_write(req)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.to_string()),
+            ),
+        };
+        let payload = serde_json::to_vec(&resp)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        stream
+            .write_all(&(payload.len() as u32).to_be_bytes())
+            .await?;
+        stream.write_all(&payload).await?;
+    }
 }
 
 pub struct MessageRaft {
@@ -775,7 +810,10 @@ impl MessageRaft {
             .get(&leader)
             .cloned()
             .ok_or_else(|| format!("missing leader addr {leader}"))?;
-        let client = NetworkClient { addr };
+        let client = NetworkClient {
+            addr,
+            conn: tokio::sync::Mutex::new(None),
+        };
         match client.call(&RpcRequest::Forward(req)).await? {
             RpcResponse::Forward(result) => result,
             _ => Err("unexpected forward response".into()),

@@ -914,25 +914,30 @@ impl BrokerStore {
         if msgs.is_empty() {
             return Ok(Vec::new());
         }
-        let persisted = if let Some(writer) = &self.writer {
-            writer.submit_batch(msgs)?
+        let (persisted, encoded_lens) = if let Some(writer) = &self.writer {
+            (writer.submit_batch(msgs)?, None)
         } else {
             let shard = msgs[0].queue_id.rem_euclid(self.shards as i32) as usize;
             let mut out = Vec::with_capacity(msgs.len());
+            let mut lens = Vec::with_capacity(msgs.len());
             if let Some(log) = self.logs.get(shard) {
                 let mut log = log.lock().unwrap();
                 for mut msg in msgs {
                     let payload = msg.encode();
+                    lens.push(payload.len());
                     let offset = log.append(&payload)?;
                     msg.physical_offset = offset.physical_offset as i64;
                     out.push(msg);
                 }
             }
-            out
+            (out, Some(lens))
         };
         let mut out = Vec::with_capacity(persisted.len());
-        for msg in persisted {
-            let len = msg.encode().len();
+        for (index, msg) in persisted.into_iter().enumerate() {
+            let len = encoded_lens
+                .as_ref()
+                .and_then(|lens| lens.get(index).copied())
+                .unwrap_or_else(|| msg.encode().len());
             let physical = msg.physical_offset;
             out.push(self.register_message(msg, Some(physical), true, len)?);
         }
