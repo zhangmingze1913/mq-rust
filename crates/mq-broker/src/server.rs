@@ -534,9 +534,6 @@ async fn handle_command(
                 if let Some(delay_ms) = start_deliver.or_else(|| delay_level_ms(delay_level)) {
                     let at = now + delay_ms;
                     if let Some(raft) = &config.raft {
-                        if !raft.is_leader() {
-                            return Err(MqError::Store("not raft leader".into()));
-                        }
                         let command = mq_raft::MessageCommand {
                             topic: msg.topic.clone(),
                             queue_id: msg.queue_id,
@@ -573,9 +570,6 @@ async fn handle_command(
                     return Ok(Some(resp));
                 }
                 if let Some(raft) = &config.raft {
-                    if !raft.is_leader() {
-                        return Err(MqError::Store("not raft leader".into()));
-                    }
                     let command = mq_raft::MessageCommand {
                         topic: msg.topic.clone(),
                         queue_id: msg.queue_id,
@@ -598,9 +592,6 @@ async fn handle_command(
             };
             if is_transaction {
                 if let Some(raft) = &config.raft {
-                    if !raft.is_leader() {
-                        return Err(MqError::Store("not raft leader".into()));
-                    }
                     let command = mq_raft::MessageCommand {
                         topic: saved.topic.clone(),
                         queue_id: saved.queue_id,
@@ -726,9 +717,6 @@ async fn handle_command(
                 return Err(MqError::Protocol("empty batch message".into()));
             }
             if let Some(raft) = &config.raft {
-                if !raft.is_leader() {
-                    return Err(MqError::Store("not raft leader".into()));
-                }
                 let commands = decoded
                     .iter()
                     .map(|msg| mq_raft::MessageCommand {
@@ -1327,9 +1315,6 @@ async fn handle_command(
             match action {
                 8 => {
                     let raft_committed = if let Some(raft) = &config.raft {
-                        if !raft.is_leader() {
-                            return Err(MqError::Store("not raft leader".into()));
-                        }
                         let command = mq_raft::MessageCommand {
                             topic: String::new(),
                             queue_id: 0,
@@ -1392,9 +1377,6 @@ async fn handle_command(
                 }
                 12 => {
                     let raft_rollback = if let Some(raft) = &config.raft {
-                        if !raft.is_leader() {
-                            return Err(MqError::Store("not raft leader".into()));
-                        }
                         let command = mq_raft::MessageCommand {
                             topic: String::new(),
                             queue_id: 0,

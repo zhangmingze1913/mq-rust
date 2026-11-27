@@ -365,12 +365,14 @@ impl RaftSnapshotBuilder<TypeConfig> for MessageSM {
 enum RpcRequest {
     Append(AppendEntriesRequest<TypeConfig>),
     Vote(VoteRequest<TypeConfig>),
+    Forward(ClientRequest),
 }
 
 #[derive(Serialize, Deserialize)]
 enum RpcResponse {
     Append(AppendEntriesResponse<TypeConfig>),
     Vote(VoteResponse<TypeConfig>),
+    Forward(Result<(), String>),
 }
 
 #[derive(Clone)]
@@ -510,6 +512,12 @@ async fn handle(mut stream: TcpStream, raft: Raft) -> std::io::Result<()> {
             Ok(v) => RpcResponse::Vote(v),
             Err(e) => return Err(std::io::Error::other(e.to_string())),
         },
+        RpcRequest::Forward(req) => RpcResponse::Forward(
+            raft.client_write(req)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+        ),
     };
     let payload = serde_json::to_vec(&resp)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -724,11 +732,7 @@ impl MessageRaft {
             serial: 1,
             status: serde_json::to_string(&RaftCommand::Single(cmd)).map_err(|e| e.to_string())?,
         };
-        self.raft
-            .client_write(req)
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(())
+        self.client_write_or_forward(req).await
     }
 
     pub async fn write_batch(&self, messages: Vec<MessageCommand>) -> Result<(), String> {
@@ -742,11 +746,40 @@ impl MessageRaft {
             status: serde_json::to_string(&RaftCommand::Batch { messages })
                 .map_err(|e| e.to_string())?,
         };
-        self.raft
-            .client_write(req)
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(())
+        self.client_write_or_forward(req).await
+    }
+
+    async fn client_write_or_forward(&self, req: ClientRequest) -> Result<(), String> {
+        let result = self.raft.client_write(req.clone()).await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(err) => {
+                if let openraft::error::RaftError::APIError(
+                    openraft::error::ClientWriteError::ForwardToLeader(forward),
+                ) = &err
+                {
+                    if let Some(leader) = forward.leader_id {
+                        return self.forward_write(leader, req).await;
+                    }
+                }
+                Err(err.to_string())
+            }
+        }
+    }
+
+    async fn forward_write(&self, leader: u64, req: ClientRequest) -> Result<(), String> {
+        let addr = self
+            .peers
+            .read()
+            .unwrap()
+            .get(&leader)
+            .cloned()
+            .ok_or_else(|| format!("missing leader addr {leader}"))?;
+        let client = NetworkClient { addr };
+        match client.call(&RpcRequest::Forward(req)).await? {
+            RpcResponse::Forward(result) => result,
+            _ => Err("unexpected forward response".into()),
+        }
     }
 
     pub async fn messages(&self) -> Vec<MessageCommand> {
