@@ -1,0 +1,176 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mq-rust
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mq-rust-namesrv
+  namespace: mq-rust
+spec:
+  selector:
+    app: mq-rust-namesrv
+  ports:
+    - name: remoting
+      port: 9877
+      targetPort: 9877
+    - name: admin
+      port: 9878
+      targetPort: 9878
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mq-rust-namesrv
+  namespace: mq-rust
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mq-rust-namesrv
+  template:
+    metadata:
+      labels:
+        app: mq-rust-namesrv
+    spec:
+      containers:
+        - name: namesrv
+          image: mq-rust:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/local/bin/mq-namesrv
+            - --listen
+            - 0.0.0.0:9877
+            - --admin-listen
+            - 0.0.0.0:9878
+            - --cluster
+            - DefaultCluster
+            - --broker-name
+            - broker-a
+            - --broker-addr
+            - mq-rust-broker-1.mq-rust-broker:10921
+            - --queues
+            - "8"
+          ports:
+            - containerPort: 9877
+            - containerPort: 9878
+          readinessProbe:
+            tcpSocket:
+              port: 9877
+            initialDelaySeconds: 2
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mq-rust-broker
+  namespace: mq-rust
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: mq-rust-broker
+  ports:
+    - name: remoting
+      port: 10921
+      targetPort: 10921
+    - name: raft
+      port: 19301
+      targetPort: 19301
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+    - name: admin
+      port: 9091
+      targetPort: 9091
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mq-rust-broker
+  namespace: mq-rust
+spec:
+  serviceName: mq-rust-broker
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: mq-rust-broker
+  template:
+    metadata:
+      labels:
+        app: mq-rust-broker
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: mq-rust-broker
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: broker
+          image: mq-rust:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              ID=$(( ${HOSTNAME##*-} + 1 ))
+              PEERS="1@mq-rust-broker-0.mq-rust-broker:19301,2@mq-rust-broker-1.mq-rust-broker:19301,3@mq-rust-broker-2.mq-rust-broker:19301"
+              exec /usr/local/bin/mq-broker \
+                --listen 0.0.0.0:10921 \
+                --namesrv mq-rust-namesrv:9877 \
+                --queues 8 \
+                --commitlog-shards 1 \
+                --store-root /data/broker \
+                --raft-listen 0.0.0.0:19301 \
+                --raft-id "$ID" \
+                --raft-peers "$PEERS" \
+                --advertise "mq-rust-broker-$((ID-1)).mq-rust-broker:10921" \
+                --namesrv-admin mq-rust-namesrv:9878 \
+                --metrics-listen 0.0.0.0:9090 \
+                --admin-listen 0.0.0.0:9091 \
+                --flush-interval-ms 1000 \
+                --tx-timeout-ms 10000 \
+                --trace-enabled=false \
+                --audit-path /data/audit.log \
+                --inbox-path /data/inbox.log
+          ports:
+            - containerPort: 10921
+            - containerPort: 19301
+            - containerPort: 9090
+            - containerPort: 9091
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9091
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9091
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
