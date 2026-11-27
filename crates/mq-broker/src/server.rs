@@ -611,9 +611,8 @@ async fn handle_command(
                     };
                     raft.write(command).await.map_err(MqError::Store)?;
                     tracing::debug!(msg_id = %msg.msg_id, "raft write committed");
-                    config
-                        .store
-                        .message_by_id(&msg.msg_id)
+                    wait_applied(&config.store, &msg.msg_id)
+                        .await
                         .ok_or_else(|| MqError::Store("raft applied message not found".into()))?
                 } else {
                     config.store.append(msg)?
@@ -765,9 +764,11 @@ async fn handle_command(
             let mut last: Option<StoredMessage> = None;
             for msg in decoded {
                 let saved = if config.raft.is_some() {
-                    config.store.message_by_id(&msg.msg_id).ok_or_else(|| {
-                        MqError::Store("raft applied batch message not found".into())
-                    })?
+                    wait_applied(&config.store, &msg.msg_id)
+                        .await
+                        .ok_or_else(|| {
+                            MqError::Store("raft applied batch message not found".into())
+                        })?
                 } else {
                     config.store.append(msg)?
                 };
@@ -1603,6 +1604,16 @@ fn acl_signature_valid(
         }
     }
     crate::hmac::rocketmq_signature(secret, &values, body).as_bytes() == signature.as_bytes()
+}
+
+async fn wait_applied(store: &BrokerStore, msg_id: &str) -> Option<StoredMessage> {
+    for _ in 0..400 {
+        if let Some(msg) = store.message_by_id(msg_id) {
+            return Some(msg);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    None
 }
 
 #[cfg(test)]
