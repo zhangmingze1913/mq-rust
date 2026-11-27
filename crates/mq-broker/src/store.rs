@@ -79,6 +79,10 @@ enum WriteCmd {
         reply: SyncSender<Vec<Result<StoredMessage>>>,
     },
     Sync(SyncSender<Result<()>>),
+    Rebuild {
+        msgs: Vec<StoredMessage>,
+        reply: SyncSender<Result<Vec<StoredMessage>>>,
+    },
 }
 
 struct CommitWriter {
@@ -102,6 +106,15 @@ impl CommitWriter {
             .map_err(|_| MqError::Store("commit writer stopped".into()))?;
         rx.recv()
             .map_err(|_| MqError::Store("commit writer reply lost".into()))?
+    }
+
+    fn rebuild(&self, msgs: Vec<StoredMessage>) -> Result<Vec<StoredMessage>> {
+        let (reply, rx) = mpsc::sync_channel(0);
+        self.tx
+            .send(WriteCmd::Rebuild { msgs, reply })
+            .map_err(|_| MqError::Store("commit writer stopped".into()))?;
+        rx.recv()
+            .map_err(|_| MqError::Store("commit writer rebuild reply lost".into()))?
     }
 
     fn submit_batch(&self, msgs: Vec<StoredMessage>) -> Result<Vec<StoredMessage>> {
@@ -147,6 +160,9 @@ fn run_commit_writer(mut log: CommitLog, rx: Receiver<WriteCmd>) {
                         Ok(WriteCmd::Sync(reply)) => {
                             let _ = reply.send(log.sync());
                         }
+                        Ok(WriteCmd::Rebuild { msgs, reply }) => {
+                            let _ = reply.send(rebuild_log(&mut log, msgs));
+                        }
                         Err(_) => break,
                     }
                 }
@@ -187,9 +203,24 @@ fn run_commit_writer(mut log: CommitLog, rx: Receiver<WriteCmd>) {
             Ok(WriteCmd::Sync(reply)) => {
                 let _ = reply.send(log.sync());
             }
+            Ok(WriteCmd::Rebuild { msgs, reply }) => {
+                let _ = reply.send(rebuild_log(&mut log, msgs));
+            }
             Err(_) => break,
         }
     }
+}
+
+fn rebuild_log(log: &mut CommitLog, msgs: Vec<StoredMessage>) -> Result<Vec<StoredMessage>> {
+    log.truncate()?;
+    let mut out = Vec::with_capacity(msgs.len());
+    for mut msg in msgs {
+        let payload = msg.encode();
+        let offset = log.append(&payload)?;
+        msg.physical_offset = offset.physical_offset as i64;
+        out.push(msg);
+    }
+    Ok(out)
 }
 
 pub enum ReplicaCmd {
@@ -484,8 +515,8 @@ impl BrokerStore {
     }
 
     fn compact_commitlogs_exact(&self) -> Result<()> {
-        if self.writer.is_some() || self.logs.is_empty() {
-            tracing::warn!("exact commitlog compaction requires non-group writer");
+        if self.logs.is_empty() && self.writer.is_none() {
+            tracing::warn!("exact commitlog compaction needs a storage log");
             return Ok(());
         }
         let root = self
@@ -510,36 +541,44 @@ impl BrokerStore {
             }
         }
         let mut offsets = std::collections::HashMap::new();
-        for (shard, mut messages) in per_shard.into_iter().enumerate() {
+        if let Some(writer) = &self.writer {
+            let mut messages: Vec<StoredMessage> = per_shard.into_iter().flatten().collect();
             messages.sort_by_key(|msg| msg.physical_offset);
-            let path = root.join(format!("commitlog-{shard}"));
-            let tmp = root.join(format!("commitlog-{shard}.compact"));
-            let _ = std::fs::remove_file(&tmp);
-            let _ = std::fs::remove_file(tmp.with_extension("compact.1"));
-            let mut log = CommitLog::open_with_segment(&tmp, 256 * 1024 * 1024)?;
-            for msg in &messages {
-                let payload = msg.encode();
-                let appended = log.append(&payload)?;
-                offsets.insert(
-                    (msg.topic.clone(), msg.msg_id.clone()),
-                    appended.physical_offset as i64,
-                );
+            for msg in writer.rebuild(messages)? {
+                offsets.insert((msg.topic.clone(), msg.msg_id.clone()), msg.physical_offset);
             }
-            drop(log);
-            let prefix = format!("commitlog-{shard}");
-            for entry in std::fs::read_dir(&root)? {
-                let entry = entry?;
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name == prefix
-                    || (name.starts_with(&format!("{prefix}."))
-                        && !name.starts_with(&format!("{prefix}.compact")))
-                {
-                    let _ = std::fs::remove_file(entry.path());
+        } else {
+            for (shard, mut messages) in per_shard.into_iter().enumerate() {
+                messages.sort_by_key(|msg| msg.physical_offset);
+                let path = root.join(format!("commitlog-{shard}"));
+                let tmp = root.join(format!("commitlog-{shard}.compact"));
+                let _ = std::fs::remove_file(&tmp);
+                let _ = std::fs::remove_file(tmp.with_extension("compact.1"));
+                let mut log = CommitLog::open_with_segment(&tmp, 256 * 1024 * 1024)?;
+                for msg in &messages {
+                    let payload = msg.encode();
+                    let appended = log.append(&payload)?;
+                    offsets.insert(
+                        (msg.topic.clone(), msg.msg_id.clone()),
+                        appended.physical_offset as i64,
+                    );
                 }
+                drop(log);
+                let prefix = format!("commitlog-{shard}");
+                for entry in std::fs::read_dir(&root)? {
+                    let entry = entry?;
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name == prefix
+                        || (name.starts_with(&format!("{prefix}."))
+                            && !name.starts_with(&format!("{prefix}.compact")))
+                    {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+                std::fs::rename(&tmp, &path)?;
+                let reopened = CommitLog::open_with_segment(&path, 256 * 1024 * 1024)?;
+                *self.logs[shard].lock().unwrap() = reopened;
             }
-            std::fs::rename(&tmp, &path)?;
-            let reopened = CommitLog::open_with_segment(&path, 256 * 1024 * 1024)?;
-            *self.logs[shard].lock().unwrap() = reopened;
         }
         for (_, state) in &topics {
             let state = state.read().unwrap();
@@ -2465,6 +2504,32 @@ mod tests {
         store.compact_commitlogs_exact().unwrap();
         store.repair_cq_force().unwrap();
         let (msgs, _, _) = store.read("compact", 0, 0, 10).unwrap();
+        assert_eq!(msgs.len(), 1);
+        let path = dir.join("commitlog-0");
+        assert!(std::fs::metadata(path).unwrap().len() < 4096);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn group_writer_commitlog_compaction_keeps_survivors() {
+        let dir = std::env::temp_dir().join(format!(
+            "mq-rust-compact-group-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = BrokerStore::open_sharded_with_group(&dir, 8, 1, true).unwrap();
+        for index in 0..4 {
+            let mut msg = sample("compactg", 0);
+            msg.msg_id = format!("g{index}");
+            store.append(msg).unwrap();
+        }
+        store.retain(1, 0, 0).unwrap();
+        store.compact_now().unwrap();
+        let (msgs, _, _) = store.read("compactg", 0, 0, 10).unwrap();
         assert_eq!(msgs.len(), 1);
         let path = dir.join("commitlog-0");
         assert!(std::fs::metadata(path).unwrap().len() < 4096);
