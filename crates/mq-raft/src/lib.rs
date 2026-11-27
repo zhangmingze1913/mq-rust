@@ -729,6 +729,7 @@ mod tests {
         listener.local_addr().unwrap().port()
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn snapshot_full_mode_keeps_all_messages() {
         let _env_lock = SNAPSHOT_ENV_LOCK.lock().unwrap();
@@ -761,6 +762,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn snapshot_tail_is_bounded() {
         let _env_lock = SNAPSHOT_ENV_LOCK.lock().unwrap();
