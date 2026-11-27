@@ -385,6 +385,26 @@ async fn handle(
                 ),
             }
         }
+    } else if path == "/snapshot" {
+        if method != "POST" {
+            (
+                "405 Method Not Allowed",
+                "{\"error\":\"POST required\"}".to_string(),
+            )
+        } else if let Some(raft) = raft.get() {
+            match raft.snapshot_now().await {
+                Ok(()) => ("200 OK", "{\"snapshot\":true}".to_string()),
+                Err(err) => (
+                    "500 Internal Server Error",
+                    serde_json::json!({"error": err}).to_string(),
+                ),
+            }
+        } else {
+            (
+                "400 Bad Request",
+                "{\"error\":\"raft not enabled\"}".to_string(),
+            )
+        }
     } else if path == "/compact" {
         if method != "POST" {
             (

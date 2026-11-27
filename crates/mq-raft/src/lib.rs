@@ -734,6 +734,14 @@ impl MessageRaft {
         self.raft.is_leader()
     }
 
+    pub async fn snapshot_now(&self) -> Result<(), String> {
+        self.raft
+            .trigger()
+            .snapshot()
+            .await
+            .map_err(|e| e.to_string())
+    }
+
     pub async fn add_node(&self, node_id: u64, addr: String) -> Result<(), String> {
         self.peers.write().unwrap().insert(node_id, addr);
         self.raft
