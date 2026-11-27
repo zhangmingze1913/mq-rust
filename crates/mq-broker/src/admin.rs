@@ -24,6 +24,7 @@ pub async fn serve(
     fence_token: Option<String>,
     admin_token: Option<String>,
     trace: Arc<crate::trace::TraceLog>,
+    raft: Arc<std::sync::OnceLock<Arc<mq_raft::MessageRaft>>>,
 ) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(%addr, "admin endpoint listening");
@@ -40,6 +41,7 @@ pub async fn serve(
         let fence_token = Arc::clone(&fence_token);
         let admin_token = Arc::clone(&admin_token);
         let trace = Arc::clone(&trace);
+        let raft = Arc::clone(&raft);
         tokio::spawn(async move {
             let _ = handle(
                 stream,
@@ -51,6 +53,7 @@ pub async fn serve(
                 fence_token,
                 admin_token,
                 trace,
+                raft,
             )
             .await;
         });
@@ -68,6 +71,7 @@ async fn handle(
     fence_token: Arc<Option<String>>,
     admin_token: Arc<Option<String>>,
     trace: Arc<crate::trace::TraceLog>,
+    raft: Arc<std::sync::OnceLock<Arc<mq_raft::MessageRaft>>>,
 ) -> std::io::Result<()> {
     let mut data = Vec::new();
     loop {
@@ -294,6 +298,45 @@ async fn handle(
             "200 OK",
             serde_json::to_string(&store.pending_half()).unwrap_or_else(|_| "[]".to_string()),
         )
+    } else if path.starts_with("/raft/add") {
+        if method != "POST" {
+            (
+                "405 Method Not Allowed",
+                "{\"error\":\"POST required\"}".to_string(),
+            )
+        } else {
+            let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+            let mut node = None;
+            let mut addr = None;
+            for part in query.split('&') {
+                if let Some((k, v)) = part.split_once('=') {
+                    if k == "node" {
+                        node = v.parse::<u64>().ok();
+                    } else if k == "addr" {
+                        addr = Some(v.to_string());
+                    }
+                }
+            }
+            match (node, addr, raft.get()) {
+                (Some(node), Some(addr), Some(raft)) => {
+                    if !raft.is_leader() {
+                        ("409 Conflict", "{\"error\":\"not leader\"}".to_string())
+                    } else {
+                        match raft.add_node(node, addr).await {
+                            Ok(()) => ("200 OK", serde_json::json!({"added": node}).to_string()),
+                            Err(err) => (
+                                "500 Internal Server Error",
+                                serde_json::json!({"error": err}).to_string(),
+                            ),
+                        }
+                    }
+                }
+                _ => (
+                    "400 Bad Request",
+                    "{\"error\":\"node and addr required\"}".to_string(),
+                ),
+            }
+        }
     } else if path == "/compact" {
         if method != "POST" {
             (

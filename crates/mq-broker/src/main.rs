@@ -340,6 +340,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         });
     }
     let admin_addr: std::net::SocketAddr = args.admin_listen.parse()?;
+    let raft_slot = Arc::new(std::sync::OnceLock::new());
     let inbox = Arc::new(mq_broker::inbox::Inbox::open(&args.inbox_path)?);
     tokio::spawn(admin::serve(
         Arc::clone(&store),
@@ -351,6 +352,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         args.fence_token.clone(),
         args.admin_token.clone(),
         Arc::clone(&trace),
+        Arc::clone(&raft_slot),
     ));
     let metrics = Arc::new(Metrics::new());
     metrics.tx_pending.store(
@@ -544,7 +546,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             if initialize {
                 let _ = std::fs::write(&marker, b"1");
             }
-            Some(std::sync::Arc::new(raft))
+            let raft = std::sync::Arc::new(raft);
+            let _ = raft_slot.set(std::sync::Arc::clone(&raft));
+            Some(raft)
         }
         _ => None,
     };

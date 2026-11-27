@@ -141,13 +141,19 @@ impl MessageSM {
     ) -> (Self, Messages) {
         let path = snapshot_path.into();
         let applied_path = path.with_extension("applied");
-        let applied_loaded = std::fs::read(&applied_path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Option<LogIdOf<TypeConfig>>>(&bytes).ok())
-            .flatten();
         let loaded = std::fs::read(&path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<SnapshotFile>(&bytes).ok());
+        let applied_loaded = if loaded.is_some() {
+            std::fs::read(&applied_path)
+                .ok()
+                .and_then(|bytes| {
+                    serde_json::from_slice::<Option<LogIdOf<TypeConfig>>>(&bytes).ok()
+                })
+                .flatten()
+        } else {
+            None
+        };
         let (messages, applied_value, membership) = match loaded {
             Some(snapshot) => (
                 Arc::new(RwLock::new(snapshot.messages)),
@@ -369,7 +375,7 @@ enum RpcResponse {
 
 #[derive(Clone)]
 struct NetworkFactory {
-    peers: HashMap<u64, String>,
+    peers: Arc<std::sync::RwLock<HashMap<u64, String>>>,
 }
 
 struct NetworkClient {
@@ -381,7 +387,13 @@ impl RaftNetworkFactory<TypeConfig> for NetworkFactory {
 
     async fn new_client(&mut self, target: u64, _node: &()) -> Self::Network {
         NetworkClient {
-            addr: self.peers.get(&target).cloned().unwrap_or_default(),
+            addr: self
+                .peers
+                .read()
+                .unwrap()
+                .get(&target)
+                .cloned()
+                .unwrap_or_default(),
         }
     }
 }
@@ -512,6 +524,7 @@ pub struct MessageRaft {
     node_id: u64,
     raft: Raft,
     messages: Messages,
+    peers: Arc<std::sync::RwLock<HashMap<u64, String>>>,
 }
 
 impl MessageRaft {
@@ -613,7 +626,9 @@ impl MessageRaft {
         log_path: Option<std::path::PathBuf>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let listener = TcpListener::bind(listen).await?;
-        let peer_map: HashMap<u64, String> = peers.iter().cloned().collect();
+        let peer_map = Arc::new(std::sync::RwLock::new(
+            peers.iter().cloned().collect::<HashMap<u64, String>>(),
+        ));
         let config = Arc::new(
             openraft::Config {
                 cluster_name: "mq-rust-raft".into(),
@@ -633,7 +648,9 @@ impl MessageRaft {
                 openraft::Raft::new(
                     node_id,
                     config,
-                    NetworkFactory { peers: peer_map },
+                    NetworkFactory {
+                        peers: Arc::clone(&peer_map),
+                    },
                     log_store,
                     sm,
                 )
@@ -645,7 +662,9 @@ impl MessageRaft {
                 openraft::Raft::new(
                     node_id,
                     config,
-                    NetworkFactory { peers: peer_map },
+                    NetworkFactory {
+                        peers: Arc::clone(&peer_map),
+                    },
                     log_store,
                     sm,
                 )
@@ -664,11 +683,28 @@ impl MessageRaft {
             node_id,
             raft,
             messages,
+            peers: peer_map,
         })
     }
 
     pub fn is_leader(&self) -> bool {
         self.raft.is_leader()
+    }
+
+    pub async fn add_node(&self, node_id: u64, addr: String) -> Result<(), String> {
+        self.peers.write().unwrap().insert(node_id, addr);
+        self.raft
+            .add_learner(node_id, (), true)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut voters: std::collections::BTreeSet<u64> =
+            self.peers.read().unwrap().keys().copied().collect();
+        voters.insert(node_id);
+        self.raft
+            .change_membership(voters, false)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub async fn wait_leader(&self, timeout: Duration) -> Option<u64> {
