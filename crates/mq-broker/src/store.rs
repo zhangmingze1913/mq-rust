@@ -2351,6 +2351,29 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_msg_id_is_idempotent_after_reopen() {
+        let dir = std::env::temp_dir().join(format!(
+            "mq-rust-reopen-dedup-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        {
+            let store = BrokerStore::open(&dir, 8).unwrap();
+            store.append(sample("orders", 0)).unwrap();
+        }
+        let store = BrokerStore::open(&dir, 8).unwrap();
+        store.append(sample("orders", 0)).unwrap();
+        let (msgs, _, max) = store.read("orders", 0, 0, 10).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(max, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn duplicate_msg_id_is_idempotent() {
         let store = BrokerStore::new(8);
         let a = store.append(sample("orders", 0)).unwrap();
