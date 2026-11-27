@@ -239,22 +239,52 @@ impl TraceLog {
     }
 
     pub fn recent(&self, topic: Option<&str>, limit: usize) -> Vec<TraceEvent> {
+        self.page(topic, None, None, 0, limit).1
+    }
+
+    pub fn page(
+        &self,
+        topic: Option<&str>,
+        from: Option<i64>,
+        to: Option<i64>,
+        offset: usize,
+        limit: usize,
+    ) -> (usize, Vec<TraceEvent>) {
         let events = self.events.lock().unwrap();
-        let mut out: Vec<TraceEvent> = events
+        let mut filtered: Vec<TraceEvent> = events
             .iter()
             .filter(|event| topic.is_none_or(|topic| event.topic == topic))
+            .filter(|event| from.is_none_or(|from| event.timestamp >= from))
+            .filter(|event| to.is_none_or(|to| event.timestamp <= to))
             .cloned()
             .collect();
-        if out.len() > limit {
-            out.drain(0..out.len() - limit);
-        }
-        out
+        filtered.reverse();
+        let total = filtered.len();
+        let page = filtered.into_iter().skip(offset).take(limit).collect();
+        (total, page)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trace_page_filters_and_offsets() {
+        let trace = TraceLog::new(10);
+        for index in 0..5 {
+            trace.record("send", "t", 0, index, &format!("m{index}"), None);
+        }
+        let (total, page) = trace.page(Some("t"), None, None, 1, 2);
+        assert_eq!(total, 5);
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].msg_id, "m3");
+        assert_eq!(page[1].msg_id, "m2");
+        let now = mq_common::now_ms();
+        let (total, page) = trace.page(None, Some(now + 1_000), None, 0, 10);
+        assert_eq!(total, 0);
+        assert!(page.is_empty());
+    }
 
     #[test]
     fn trace_keeps_latest_and_filters() {

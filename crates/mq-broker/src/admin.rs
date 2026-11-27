@@ -182,11 +182,14 @@ async fn handle(
             })
             .to_string(),
         )
-    } else if path == "/traces" || path.starts_with("/traces?") {
+    } else if path == "/traces/page" || path.starts_with("/traces/page?") {
         if method == "GET" {
             let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
             let mut topic: Option<&str> = None;
             let mut limit = 50usize;
+            let mut offset = 0usize;
+            let mut from: Option<i64> = None;
+            let mut to: Option<i64> = None;
             for pair in query.split('&') {
                 if let Some((key, value)) = pair.split_once('=') {
                     match key {
@@ -194,13 +197,58 @@ async fn handle(
                         "limit" => {
                             limit = value.parse::<usize>().unwrap_or(50).clamp(1, 500);
                         }
+                        "offset" => {
+                            offset = value.parse::<usize>().unwrap_or(0);
+                        }
+                        "from" => from = value.parse::<i64>().ok(),
+                        "to" => to = value.parse::<i64>().ok(),
                         _ => {}
                     }
                 }
             }
+            let (total, events) = trace.page(topic, from, to, offset, limit);
             (
                 "200 OK",
-                serde_json::to_string(&trace.recent(topic, limit)).unwrap_or_else(|_| "[]".into()),
+                serde_json::json!({
+                    "total": total,
+                    "offset": offset,
+                    "limit": limit,
+                    "events": events,
+                })
+                .to_string(),
+            )
+        } else {
+            (
+                "400 Bad Request",
+                "{\"error\":\"bad traces page request\"}".into(),
+            )
+        }
+    } else if path == "/traces" || path.starts_with("/traces?") {
+        if method == "GET" {
+            let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+            let mut topic: Option<&str> = None;
+            let mut limit = 50usize;
+            let mut offset = 0usize;
+            let mut from: Option<i64> = None;
+            let mut to: Option<i64> = None;
+            for pair in query.split('&') {
+                if let Some((key, value)) = pair.split_once('=') {
+                    match key {
+                        "topic" => topic = Some(value),
+                        "limit" => {
+                            limit = value.parse::<usize>().unwrap_or(50).clamp(1, 500);
+                        }
+                        "offset" => offset = value.parse::<usize>().unwrap_or(0),
+                        "from" => from = value.parse::<i64>().ok(),
+                        "to" => to = value.parse::<i64>().ok(),
+                        _ => {}
+                    }
+                }
+            }
+            let (_, events) = trace.page(topic, from, to, offset, limit);
+            (
+                "200 OK",
+                serde_json::to_string(&events).unwrap_or_else(|_| "[]".into()),
             )
         } else {
             (
