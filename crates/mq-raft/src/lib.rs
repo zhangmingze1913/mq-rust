@@ -502,6 +502,9 @@ enum RpcResponse {
 const RPC_MAGIC: &[u8; 4] = b"MQB1";
 
 fn encode_rpc<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
+    if std::env::var("MQ_RAFT_RPC_JSON").as_deref() == Ok("1") {
+        return serde_json::to_vec(value).map_err(|e| e.to_string());
+    }
     let body = bincode::serialize(value).map_err(|e| e.to_string())?;
     let mut out = Vec::with_capacity(body.len() + 4);
     out.extend_from_slice(RPC_MAGIC);
