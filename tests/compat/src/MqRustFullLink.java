@@ -24,6 +24,7 @@ public final class MqRustFullLink {
         int recvThreads = args.length > 3 ? Integer.parseInt(args[3]) : 4;
         int seconds = args.length > 4 ? Integer.parseInt(args[4]) : 60;
         int batch = args.length > 5 ? Integer.parseInt(args[5]) : 256;
+        int sendTimeoutMs = args.length > 6 ? Integer.parseInt(args[6]) : 3000;
 
         AtomicLong sent = new AtomicLong();
         AtomicLong failed = new AtomicLong();
@@ -60,7 +61,7 @@ public final class MqRustFullLink {
 
         DefaultMQProducer producer = new DefaultMQProducer("full_link_producer");
         producer.setNamesrvAddr(namesrv);
-        producer.setSendMsgTimeout(3000);
+        producer.setSendMsgTimeout(sendTimeoutMs);
         producer.setMaxMessageSize(4 * 1024 * 1024);
         producer.start();
 
