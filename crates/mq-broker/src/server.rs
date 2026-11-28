@@ -760,15 +760,20 @@ async fn handle_command(
                     .collect();
                 raft.write_batch(commands).await.map_err(MqError::Store)?;
             }
+            if config.raft.is_some() {
+                if let Some(last_id) = decoded.last().map(|msg| msg.msg_id.clone()) {
+                    wait_applied(&config.store, &last_id).await.ok_or_else(|| {
+                        MqError::Store("raft applied batch message not found".into())
+                    })?;
+                }
+            }
             let count = decoded.len() as u64;
             let mut last: Option<StoredMessage> = None;
             for msg in decoded {
                 let saved = if config.raft.is_some() {
-                    wait_applied(&config.store, &msg.msg_id)
-                        .await
-                        .ok_or_else(|| {
-                            MqError::Store("raft applied batch message not found".into())
-                        })?
+                    config.store.message_by_id(&msg.msg_id).ok_or_else(|| {
+                        MqError::Store("raft applied batch message not found".into())
+                    })?
                 } else {
                     config.store.append(msg)?
                 };
