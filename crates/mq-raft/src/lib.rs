@@ -499,6 +499,24 @@ enum RpcResponse {
     Forward(Result<(), String>),
 }
 
+const RPC_MAGIC: &[u8; 4] = b"MQB1";
+
+fn encode_rpc<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
+    let body = bincode::serialize(value).map_err(|e| e.to_string())?;
+    let mut out = Vec::with_capacity(body.len() + 4);
+    out.extend_from_slice(RPC_MAGIC);
+    out.extend_from_slice(&body);
+    Ok(out)
+}
+
+fn decode_rpc<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
+    if bytes.starts_with(RPC_MAGIC) {
+        bincode::deserialize(&bytes[4..]).map_err(|e| e.to_string())
+    } else {
+        serde_json::from_slice(bytes).map_err(|e| e.to_string())
+    }
+}
+
 #[derive(Clone)]
 struct NetworkFactory {
     peers: Arc<std::sync::RwLock<HashMap<u64, String>>>,
@@ -578,7 +596,7 @@ impl RaftNetworkV2<TypeConfig> for NetworkClient {
 
 impl NetworkClient {
     async fn call(&self, req: &RpcRequest) -> Result<RpcResponse, String> {
-        let payload = serde_json::to_vec(req).map_err(|e| e.to_string())?;
+        let payload = encode_rpc(req)?;
         let mut guard = self.conn.lock().await;
         if guard.is_none() {
             let stream = TcpStream::connect(&self.addr)
@@ -616,7 +634,7 @@ async fn exchange(stream: &mut TcpStream, payload: &[u8]) -> Result<RpcResponse,
         .read_exact(&mut buf)
         .await
         .map_err(|e| e.to_string())?;
-    serde_json::from_slice(&buf).map_err(|e| e.to_string())
+    decode_rpc(&buf).map_err(|e| e.to_string())
 }
 
 fn unreachable(msg: impl ToString) -> RPCError<TypeConfig> {
@@ -645,7 +663,7 @@ async fn handle(mut stream: TcpStream, raft: Raft) -> std::io::Result<()> {
         }
         let mut buf = vec![0u8; u32::from_be_bytes(len) as usize];
         stream.read_exact(&mut buf).await?;
-        let req: RpcRequest = serde_json::from_slice(&buf)
+        let req: RpcRequest = decode_rpc(&buf)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let resp = match req {
             RpcRequest::Append(req) => match raft.append_entries(req).await {
@@ -663,7 +681,7 @@ async fn handle(mut stream: TcpStream, raft: Raft) -> std::io::Result<()> {
                     .map_err(|e| e.to_string()),
             ),
         };
-        let payload = serde_json::to_vec(&resp)
+        let payload = encode_rpc(&resp)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         stream
             .write_all(&(payload.len() as u32).to_be_bytes())
