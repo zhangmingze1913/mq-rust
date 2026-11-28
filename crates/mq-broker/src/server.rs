@@ -804,7 +804,7 @@ async fn handle_command(
                 transaction_id: None,
             }
             .apply(&mut resp);
-            tracing::info!(count, queue = queue_id, "batch message appended");
+            tracing::debug!(count, queue = queue_id, "batch message appended");
             Ok(Some(resp))
         }
         request_code::PULL_MESSAGE => {
