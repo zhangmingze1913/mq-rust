@@ -142,20 +142,7 @@ fn run_commit_writer(mut log: CommitLog, rx: Receiver<WriteCmd>) {
                     match rx.try_recv() {
                         Ok(WriteCmd::Job(job)) => jobs.push(job),
                         Ok(WriteCmd::Batch { msgs, reply }) => {
-                            let mut results = Vec::with_capacity(msgs.len());
-                            for mut msg in msgs {
-                                msg.physical_offset = log.len() as i64;
-                                let payload = msg.encode();
-                                match log.append(&payload) {
-                                    Ok(offset) => {
-                                        msg.physical_offset = offset.physical_offset as i64;
-                                        results.push(Ok(msg));
-                                    }
-                                    Err(err) => results
-                                        .push(Err(MqError::Store(format!("append batch: {err}")))),
-                                }
-                            }
-                            let _ = reply.send(results);
+                            let _ = reply.send(append_msgs_batch(&mut log, msgs));
                         }
                         Ok(WriteCmd::Sync(reply)) => {
                             let _ = reply.send(log.sync());
@@ -184,21 +171,7 @@ fn run_commit_writer(mut log: CommitLog, rx: Receiver<WriteCmd>) {
                 }
             }
             Ok(WriteCmd::Batch { msgs, reply }) => {
-                let mut results = Vec::with_capacity(msgs.len());
-                for mut msg in msgs {
-                    msg.physical_offset = log.len() as i64;
-                    let payload = msg.encode();
-                    match log.append(&payload) {
-                        Ok(offset) => {
-                            msg.physical_offset = offset.physical_offset as i64;
-                            results.push(Ok(msg));
-                        }
-                        Err(err) => {
-                            results.push(Err(MqError::Store(format!("append batch: {err}"))))
-                        }
-                    }
-                }
-                let _ = reply.send(results);
+                let _ = reply.send(append_msgs_batch(&mut log, msgs));
             }
             Ok(WriteCmd::Sync(reply)) => {
                 let _ = reply.send(log.sync());
@@ -208,6 +181,24 @@ fn run_commit_writer(mut log: CommitLog, rx: Receiver<WriteCmd>) {
             }
             Err(_) => break,
         }
+    }
+}
+
+fn append_msgs_batch(log: &mut CommitLog, msgs: Vec<StoredMessage>) -> Vec<Result<StoredMessage>> {
+    let payloads: Vec<Vec<u8>> = msgs.iter().map(|msg| msg.encode()).collect();
+    match log.append_batch(&payloads) {
+        Ok(offsets) => msgs
+            .into_iter()
+            .zip(offsets)
+            .map(|(mut msg, offset)| {
+                msg.physical_offset = offset.physical_offset as i64;
+                Ok(msg)
+            })
+            .collect(),
+        Err(err) => msgs
+            .into_iter()
+            .map(|_| Err(MqError::Store(format!("append batch: {err}"))))
+            .collect(),
     }
 }
 
@@ -961,10 +952,10 @@ impl BrokerStore {
             let mut lens = Vec::with_capacity(msgs.len());
             if let Some(log) = self.logs.get(shard) {
                 let mut log = log.lock().unwrap();
-                for mut msg in msgs {
-                    let payload = msg.encode();
-                    lens.push(payload.len());
-                    let offset = log.append(&payload)?;
+                let payloads: Vec<Vec<u8>> = msgs.iter().map(|msg| msg.encode()).collect();
+                lens.extend(payloads.iter().map(|payload| payload.len()));
+                let offsets = log.append_batch(&payloads)?;
+                for (mut msg, offset) in msgs.into_iter().zip(offsets) {
                     msg.physical_offset = offset.physical_offset as i64;
                     out.push(msg);
                 }
