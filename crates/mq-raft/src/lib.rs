@@ -67,6 +67,47 @@ pub enum RaftCommand {
     Single(MessageCommand),
 }
 
+const COMMAND_PREFIX: &str = "B64:";
+
+fn encode_command(command: &RaftCommand) -> Result<String, String> {
+    use base64::Engine;
+    let mut payload = Vec::new();
+    match command {
+        RaftCommand::Batch { messages } => {
+            payload.push(0u8);
+            payload.extend(bincode::serialize(messages).map_err(|e| e.to_string())?);
+        }
+        RaftCommand::Single(message) => {
+            payload.push(1u8);
+            payload.extend(bincode::serialize(message).map_err(|e| e.to_string())?);
+        }
+    }
+    Ok(format!(
+        "{COMMAND_PREFIX}{}",
+        base64::engine::general_purpose::STANDARD.encode(payload)
+    ))
+}
+
+fn decode_command(status: &str) -> Option<RaftCommand> {
+    use base64::Engine;
+    if let Some(encoded) = status.strip_prefix(COMMAND_PREFIX) {
+        let payload = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .ok()?;
+        match payload.first()? {
+            0 => Some(RaftCommand::Batch {
+                messages: bincode::deserialize(&payload[1..]).ok()?,
+            }),
+            1 => Some(RaftCommand::Single(
+                bincode::deserialize(&payload[1..]).ok()?,
+            )),
+            _ => None,
+        }
+    } else {
+        serde_json::from_str(status).ok()
+    }
+}
+
 pub type Messages = Arc<RwLock<Vec<MessageCommand>>>;
 pub type Raft = Arc<openraft::Raft<TypeConfig, MessageSM>>;
 pub type Applier = Arc<dyn Fn(MessageCommand) + Send + Sync>;
@@ -358,7 +399,7 @@ impl RaftStateMachine<TypeConfig> for MessageSM {
             let response = match entry.payload {
                 EntryPayload::Blank => ClientResponse(None),
                 EntryPayload::Normal(ref data) => {
-                    if let Ok(cmd) = serde_json::from_str::<RaftCommand>(&data.status) {
+                    if let Some(cmd) = decode_command(&data.status) {
                         match cmd {
                             RaftCommand::Batch { messages } => {
                                 if let Some(batch_applier) = &self.batch_applier {
@@ -903,7 +944,7 @@ impl MessageRaft {
         let req = ClientRequest {
             client: cmd.msg_id.clone(),
             serial: 1,
-            status: serde_json::to_string(&RaftCommand::Single(cmd)).map_err(|e| e.to_string())?,
+            status: encode_command(&RaftCommand::Single(cmd))?,
         };
         self.client_write_or_forward(req).await
     }
@@ -916,8 +957,7 @@ impl MessageRaft {
         let req = ClientRequest {
             client,
             serial: 1,
-            status: serde_json::to_string(&RaftCommand::Batch { messages })
-                .map_err(|e| e.to_string())?,
+            status: encode_command(&RaftCommand::Batch { messages })?,
         };
         self.client_write_or_forward(req).await
     }
@@ -972,6 +1012,23 @@ mod tests {
     async fn free_port() -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         listener.local_addr().unwrap().port()
+    }
+
+    #[test]
+    fn command_base64_roundtrip() {
+        let command = RaftCommand::Single(MessageCommand {
+            topic: "t".into(),
+            queue_id: 0,
+            msg_id: "m".into(),
+            body: vec![1, 2, 3],
+            properties: String::new(),
+            deliver_at_ms: None,
+            tx_id: None,
+            tx_kind: None,
+        });
+        let encoded = encode_command(&command).unwrap();
+        assert!(encoded.starts_with(COMMAND_PREFIX));
+        assert!(decode_command(&encoded).is_some());
     }
 
     #[allow(clippy::await_holding_lock)]
